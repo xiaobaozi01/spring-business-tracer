@@ -1,0 +1,5 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>com.acme</groupId><artifactId>v20-enterprise-system</artifactId><version>1.0.0</version></parent><artifactId>rpc-service</artifactId><dependencies>
+  <dependency><groupId>io.grpc</groupId><artifactId>grpc-api</artifactId><version>${grpc.version}</version></dependency>
+  <dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>${grpc.version}</version></dependency>
+  <dependency><groupId>org.springframework</groupId><artifactId>spring-context</artifactId></dependency>
+</dependencies></project>

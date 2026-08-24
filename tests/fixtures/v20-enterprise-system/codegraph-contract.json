@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "2.0",
+  "fixture": "v20-enterprise-system",
+  "contexts": [
+    {"id": "default", "activeProfiles": ["default"], "propertySources": ["ingress-service/src/main/resources/application.yml"]},
+    {"id": "prod", "activeProfiles": ["prod"], "propertySources": ["worker-service/src/main/resources/application-prod.yml"]}
+  ],
+  "entries": [
+    {"id": "ingress:webflux-fn:GET:/fn/orders/{}", "adapter": "WEBFLUX_FUNCTIONAL_STATIC_HANDLER", "symbol": "handlerGet", "contextIds": ["default"]},
+    {"id": "ingress:graphql:Query:order", "adapter": "GRAPHQL_ANNOTATED_ROOT", "symbol": "graphqlOrder", "contextIds": ["default"]},
+    {"id": "worker:jms:queue:billing.request", "adapter": "JMS_STATIC_LISTENER", "symbol": "billingConsume", "contextIds": ["prod"], "target": "billing.request", "subscription": "billing-worker", "configDependencyIds": ["billing.queue"]},
+    {"id": "worker:quartz:reconcile-job:nightly-trigger", "adapter": "QUARTZ_STATIC_JOB_TRIGGER", "symbol": "jobExecute", "contextIds": ["default"]},
+    {"id": "rpc:grpc:acme.order.OrderQuery/Find", "adapter": "GRPC_UNARY_PROTO", "symbol": "grpcFind", "target": "acme.order.OrderQuery/Find", "contextIds": ["default"]}
+  ],
+  "symbols": {
+    "handlerGet": {"qname": "com.acme.ingress.api::OrderHandler::get", "file": "ingress-service/src/main/java/com/acme/ingress/api/OrderHandler.java", "line": 13},
+    "routeService": {"qname": "com.acme.ingress.service::OrderService::findForRoute", "file": "ingress-service/src/main/java/com/acme/ingress/service/OrderService.java", "line": 10},
+    "graphqlOrder": {"qname": "com.acme.ingress.api::OrderGraphqlController::loadOrder", "file": "ingress-service/src/main/java/com/acme/ingress/api/OrderGraphqlController.java", "line": 12},
+    "graphqlService": {"qname": "com.acme.ingress.service::OrderService::findForGraphql", "file": "ingress-service/src/main/java/com/acme/ingress/service/OrderService.java", "line": 11},
+    "orderRepo": {"qname": "com.acme.ingress.repository::OrderRepository::findById", "file": "ingress-service/src/main/java/com/acme/ingress/repository/OrderRepository.java", "line": 5},
+    "billingConsume": {"qname": "com.acme.worker.messaging::BillingListener::consume", "file": "worker-service/src/main/java/com/acme/worker/messaging/BillingListener.java", "line": 12},
+    "billingService": {"qname": "com.acme.worker.service::BillingService::process", "file": "worker-service/src/main/java/com/acme/worker/service/BillingService.java", "line": 8},
+    "billingRepo": {"qname": "com.acme.worker.repository::BillingRepository::insert", "file": "worker-service/src/main/java/com/acme/worker/repository/BillingRepository.java", "line": 5},
+    "jobExecute": {"qname": "com.acme.worker.job::ReconcileJob::executeInternal", "file": "worker-service/src/main/java/com/acme/worker/job/ReconcileJob.java", "line": 10},
+    "billingPublish": {"qname": "com.acme.worker.messaging::BillingPublisher::publish", "file": "worker-service/src/main/java/com/acme/worker/messaging/BillingPublisher.java", "line": 10},
+    "reconcileService": {"qname": "com.acme.worker.service::ReconcileService::run", "file": "worker-service/src/main/java/com/acme/worker/service/ReconcileService.java", "line": 8},
+    "reconcileRepo": {"qname": "com.acme.worker.repository::ReconcileRepository::update", "file": "worker-service/src/main/java/com/acme/worker/repository/ReconcileRepository.java", "line": 5},
+    "grpcFind": {"qname": "com.acme.rpc.grpc::OrderGrpcService::find", "file": "rpc-service/src/main/java/com/acme/rpc/grpc/OrderGrpcService.java", "line": 9},
+    "rpcService": {"qname": "com.acme.rpc.service::RpcOrderService::find", "file": "rpc-service/src/main/java/com/acme/rpc/service/RpcOrderService.java", "line": 8},
+    "rpcRepo": {"qname": "com.acme.rpc.repository::RpcOrderRepository::find", "file": "rpc-service/src/main/java/com/acme/rpc/repository/RpcOrderRepository.java", "line": 5}
+  },
+  "javaEdges": [
+    ["handlerGet", "routeService"], ["routeService", "orderRepo"],
+    ["graphqlOrder", "graphqlService"], ["graphqlService", "orderRepo"],
+    ["billingConsume", "billingService"], ["billingService", "billingRepo"],
+    ["jobExecute", "reconcileService"], ["jobExecute", "billingPublish"], ["reconcileService", "reconcileRepo"],
+    ["grpcFind", "rpcService"], ["rpcService", "rpcRepo"]
+  ],
+  "frameworkDispatches": [
+    {"type": "DISPATCHES_TO", "kind": "WEBFLUX_FUNCTIONAL", "key": "GET /fn/orders/{}", "target": "handlerGet", "evidence": "ingress-service/src/main/java/com/acme/ingress/api/RouterConfig.java:14"},
+    {"type": "DISPATCHES_TO", "kind": "GRAPHQL", "key": "Query.order", "target": "graphqlOrder", "evidence": "ingress-service/src/main/resources/graphql/schema.graphqls:1 + ingress-service/src/main/java/com/acme/ingress/api/OrderGraphqlController.java:11"},
+    {"type": "TRIGGERS", "kind": "QUARTZ", "key": "reconcile-job:nightly-trigger", "target": "jobExecute", "evidence": "worker-service/src/main/java/com/acme/worker/job/QuartzConfig.java:16"},
+    {"type": "DISPATCHES_TO", "kind": "GRPC", "key": "acme.order.OrderQuery/Find:UNARY", "target": "grpcFind", "evidence": "rpc-service/src/main/proto/order.proto:4 + rpc-service/src/main/java/com/acme/rpc/grpc/OrderQueryGrpcBase.java:15"}
+  ],
+  "logicalBoundaries": [
+    {"kind": "GATEWAY_HTTP", "key": "default:GET:/gateway/orders/**->order-service", "status": "VERIFIED", "source": "gateway:GET:/gateway/orders/**", "target": "service:order-service", "sourceEvidence": "ingress-service/src/main/resources/application.yml:1", "targetEvidence": "ingress-service/src/main/resources/application.yml:6"},
+    {"kind": "GATEWAY_HTTP", "key": "dynamic:REMOTE_ORDER_URL", "status": "PARTIAL", "reason": "EXTERNAL_PLACEHOLDER_AND_CUSTOM_FILTER"},
+    {"kind": "JMS", "key": "main:queue:billing.request", "status": "VERIFIED", "source": "billingPublish", "target": "billingConsume", "sourceEvidence": "worker-service/src/main/java/com/acme/worker/messaging/BillingPublisher.java:10", "targetEvidence": "worker-service/src/main/java/com/acme/worker/messaging/BillingListener.java:11", "configDependencyIds": ["billing.queue"]}
+  ],
+  "excludedCandidates": ["RouterConfig#orderRoutes", "QuartzConfig#reconcileJobDetail", "QuartzConfig#nightlyTrigger", "OrderQueryGrpcBase#find"],
+  "persistenceAccesses": [
+    {"symbol": "orderRepo", "resource": "db:main:table:sales.orders", "operation": "READ"},
+    {"symbol": "billingRepo", "resource": "db:main:table:billing.billing_record", "operation": "INSERT"},
+    {"symbol": "reconcileRepo", "resource": "db:main:table:billing.reconcile_state", "operation": "UPDATE"},
+    {"symbol": "rpcRepo", "resource": "db:main:table:sales.orders", "operation": "READ"}
+  ],
+  "negativeProfiles": [
+    {"case": "dynamic-functional-router", "status": "PARTIAL", "reason": "RUNTIME_PATH_AND_LAMBDA_HANDLER", "evidence": "ingress-service/src/main/java/com/acme/ingress/api/DynamicRouterConfig.java:13"},
+    {"case": "jms-dynamic-destination", "status": "PARTIAL", "reason": "SPEL_DESTINATION_FORBIDDEN", "evidence": "worker-service/src/main/java/com/acme/worker/messaging/DynamicBillingListener.java:8"},
+    {"case": "quartz-runtime-scheduler", "status": "PARTIAL", "reason": "RUNTIME_SCHEDULE_JOB", "evidence": "worker-service/src/main/java/com/acme/worker/job/RuntimeQuartzScheduler.java:11"},
+    {"case": "graphql-runtime-wiring", "status": "PARTIAL", "reason": "RUNTIME_WIRING", "evidence": "ingress-service/src/main/java/com/acme/ingress/api/DynamicGraphqlConfig.java:9"},
+    {"case": "grpc-streaming", "status": "PARTIAL", "reason": "STREAMING_OUTSIDE_VERIFIED_PROFILE", "evidence": "rpc-service/src/main/proto/order.proto:5"}
+  ]
+}

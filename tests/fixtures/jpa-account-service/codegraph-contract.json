@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "contract-replay",
+  "workspace": "tests/fixtures/jpa-account-service",
+  "capabilities": {
+    "status": "codegraph_status",
+    "methodSymbols": "codegraph_search_symbols",
+    "callees": "codegraph_callees",
+    "sourceLocations": true,
+    "implementations": "codegraph_implementations",
+    "callers": "codegraph_callers"
+  },
+  "queries": [
+    {
+      "tool": "codegraph_status",
+      "args": {"workspace": "tests/fixtures/jpa-account-service"},
+      "result": {"indexed": true, "language": "java", "symbolCount": 11}
+    },
+    {
+      "tool": "codegraph_search_symbols",
+      "args": {"query": "com.acme.account.api.AccountController#activate"},
+      "result": {
+        "symbols": [
+          {"id": "a1", "signature": "com.acme.account.api.AccountController#activate(Long)", "file": "src/main/java/com/acme/account/api/AccountController.java", "line": 19}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "a1"},
+      "result": {
+        "edges": [
+          {"from": "a1", "to": "a2", "signature": "com.acme.account.service.AccountService#activate(Long)", "file": "src/main/java/com/acme/account/api/AccountController.java", "line": 20}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "a2"},
+      "result": {
+        "edges": [
+          {"from": "a2", "to": "a3", "signature": "com.acme.account.repository.AccountRepository#findById(Long)", "file": "src/main/java/com/acme/account/service/AccountService.java", "line": 18},
+          {"from": "a2", "to": "a4", "signature": "com.acme.account.domain.CustomerAccount#activate()", "file": "src/main/java/com/acme/account/service/AccountService.java", "line": 20},
+          {"from": "a2", "to": "a5", "signature": "com.acme.account.repository.AccountRepository#save(CustomerAccount)", "file": "src/main/java/com/acme/account/service/AccountService.java", "line": 21}
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "target": "http:POST:/api/accounts/{id}/activate",
+    "entry": "com.acme.account.api.AccountController#activate(Long)",
+    "tables": [
+      {"name": "account.customer_account", "operations": ["READ", "UPSERT_OR_UPDATE"]}
+    ],
+    "mustMention": ["ACTIVE", "账户不存在", "@Transactional"],
+    "status": "TEST_ONLY"
+  }
+}

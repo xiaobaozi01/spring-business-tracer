@@ -1,0 +1,6 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><parent><groupId>com.acme</groupId><artifactId>v20-enterprise-system</artifactId><version>1.0.0</version></parent><artifactId>worker-service</artifactId><dependencies>
+  <dependency><groupId>org.springframework</groupId><artifactId>spring-context-support</artifactId></dependency>
+  <dependency><groupId>org.springframework</groupId><artifactId>spring-jms</artifactId></dependency>
+  <dependency><groupId>javax.jms</groupId><artifactId>javax.jms-api</artifactId><version>2.0.1</version></dependency>
+  <dependency><groupId>org.quartz-scheduler</groupId><artifactId>quartz</artifactId><version>2.3.2</version></dependency>
+</dependencies></project>

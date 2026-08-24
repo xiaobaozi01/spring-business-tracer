@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/graph-diff.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fromRunId", "toRunId", "fromGraphHash", "toGraphHash", "entries", "nodes", "edges"],
+  "properties": {
+    "fromRunId": {"type": "string"},
+    "toRunId": {"type": "string"},
+    "fromGraphHash": {"type": "string"},
+    "toGraphHash": {"type": "string"},
+    "entries": {"$ref": "#/$defs/changePage"},
+    "nodes": {"$ref": "#/$defs/changePage"},
+    "edges": {"$ref": "#/$defs/changePage"}
+  },
+  "$defs": {
+    "changePage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counts", "total", "rows", "truncated", "complete"],
+      "properties": {
+        "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "total": {"type": "integer", "minimum": 0},
+        "rows": {"type": "array", "maxItems": 500, "items": {"type": "object", "required": ["change", "id"]}},
+        "truncated": {"type": "boolean"},
+        "complete": {"type": "boolean"}
+      }
+    }
+  }
+}

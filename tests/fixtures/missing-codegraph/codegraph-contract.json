@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "contract-replay",
+  "workspace": "tests/fixtures/missing-codegraph",
+  "capabilities": {
+    "status": null,
+    "methodSymbols": null,
+    "callees": null,
+    "sourceLocations": false,
+    "implementations": null,
+    "callers": null
+  },
+  "queries": [],
+  "capabilityCases": [
+    {"methodSymbols": false, "callees": true, "sourceLocations": true, "expected": "FAIL"},
+    {"methodSymbols": true, "callees": false, "sourceLocations": true, "expected": "FAIL"},
+    {"methodSymbols": true, "callees": true, "sourceLocations": false, "expected": "FAIL"},
+    {"methodSymbols": true, "callees": true, "sourceLocations": true, "expected": "PASS_OR_WARN"}
+  ],
+  "expected": {
+    "doctorStatus": "FAIL",
+    "mustMention": ["方法级符号", "callees", "源码位置"],
+    "mustNotMention": ["已成功生成业务链路"]
+  }
+}

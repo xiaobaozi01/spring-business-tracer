@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/audit.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "kind", "validator", "decision", "fingerprints", "checks", "queryLog"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "runId": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["COVERAGE", "BOUNDARY", "INCREMENTAL", "CONFIG"]},
+    "validator": {"enum": ["spring-coverage-auditor", "spring-boundary-validator", "spring-incremental-validator", "spring-config-auditor"]},
+    "decision": {"enum": ["ACCEPTED", "REJECTED", "NEEDS_REVIEW"]},
+    "fingerprints": {"type": "object", "additionalProperties": false, "required": ["config", "source", "index", "toolkit", "resolvedConfig", "adapterRegistry"], "properties": {"config": {"type": "string", "minLength": 1}, "source": {"type": "string", "minLength": 1}, "index": {"type": "string", "minLength": 1}, "toolkit": {"type": "string", "minLength": 1}, "resolvedConfig": {"type": "string", "minLength": 1}, "adapterRegistry": {"type": "string", "minLength": 1}}},
+    "checks": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["code", "passed", "evidence"], "properties": {"code": {"type": "string", "minLength": 1}, "passed": {"type": "boolean"}, "evidence": {"type": "array"}}}},
+    "queryLog": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["tool", "args", "resultCount", "truncated"],
+        "properties": {
+          "tool": {"type": "string", "pattern": "^codegraph_[a-z][a-z0-9_]*$"},
+          "args": {"type": "object", "required": ["limit"], "properties": {"limit": {"type": "integer", "minimum": 2, "maximum": 1000}}},
+          "resultCount": {"type": "integer", "minimum": 0},
+          "truncated": {"const": false}
+        }
+      }
+    },
+    "baseRunId": {"type": "string"},
+    "baseGraphHash": {"type": "string"},
+    "baseManifestHash": {"type": "string"},
+    "baseTopologyRootHash": {"type": "string"},
+    "changedServices": {"type": "array", "items": {"type": "string"}},
+    "changedConfigKeys": {"type": "array", "items": {"type": "string"}},
+    "resolutionContextHash": {"type": "string"},
+    "contextIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "resolutionLog": {"type": "array", "items": {"type": "object"}},
+    "reusableEntryIds": {"type": "array", "items": {"type": "string"}},
+    "affectedEntryIds": {"type": "array", "items": {"type": "string"}},
+    "newEntryIds": {"type": "array", "items": {"type": "string"}},
+    "tombstonedEntryIds": {"type": "array", "items": {"type": "string"}},
+    "workQueueEntryIds": {"type": "array", "items": {"type": "string"}},
+    "verifiedBoundaryIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "findings": {"type": "array"},
+    "summary": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "COVERAGE"}}}, "then": {"properties": {"validator": {"const": "spring-coverage-auditor"}}}},
+    {"if": {"properties": {"kind": {"const": "BOUNDARY"}}}, "then": {"required": ["verifiedBoundaryIds"], "properties": {"validator": {"const": "spring-boundary-validator"}}}},
+    {"if": {"properties": {"kind": {"const": "INCREMENTAL"}}}, "then": {"required": ["baseRunId", "baseGraphHash", "baseManifestHash", "baseTopologyRootHash", "changedServices", "changedConfigKeys", "reusableEntryIds", "affectedEntryIds", "newEntryIds", "tombstonedEntryIds", "workQueueEntryIds"], "properties": {"validator": {"const": "spring-incremental-validator"}}}},
+    {"if": {"properties": {"kind": {"const": "CONFIG"}}}, "then": {"required": ["resolutionContextHash", "contextIds", "resolutionLog"], "properties": {"validator": {"const": "spring-config-auditor"}}}}
+  ]
+}

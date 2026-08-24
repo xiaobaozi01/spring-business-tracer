@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "contract-replay",
+  "workspace": "tests/fixtures/mybatis-order-service",
+  "capabilities": {
+    "status": "codegraph_status",
+    "methodSymbols": "codegraph_search_symbols",
+    "callees": "codegraph_callees",
+    "sourceLocations": true,
+    "implementations": "codegraph_implementations",
+    "callers": "codegraph_callers"
+  },
+  "queries": [
+    {
+      "tool": "codegraph_status",
+      "args": {"workspace": "tests/fixtures/mybatis-order-service"},
+      "result": {"indexed": true, "language": "java", "symbolCount": 14}
+    },
+    {
+      "tool": "codegraph_search_symbols",
+      "args": {"query": "com.acme.order.api.OrderController#create"},
+      "result": {
+        "symbols": [
+          {"id": "m1", "signature": "com.acme.order.api.OrderController#create(CreateOrderRequest)", "file": "src/main/java/com/acme/order/api/OrderController.java", "line": 19}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "m1"},
+      "result": {
+        "edges": [
+          {"from": "m1", "to": "m2", "file": "src/main/java/com/acme/order/api/OrderController.java", "line": 20}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_implementations",
+      "args": {"symbol": "com.acme.order.service.OrderService#create(String,Long)"},
+      "result": {
+        "symbols": [
+          {"id": "m2", "signature": "com.acme.order.service.OrderServiceImpl#create(String,Long)", "file": "src/main/java/com/acme/order/service/OrderServiceImpl.java", "line": 17}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "m2"},
+      "result": {
+        "edges": [
+          {"from": "m2", "to": "m3", "signature": "com.acme.order.mapper.OrderMapper#existsByBizNo(String)", "file": "src/main/java/com/acme/order/service/OrderServiceImpl.java", "line": 18},
+          {"from": "m2", "to": "m4", "signature": "com.acme.order.mapper.OrderMapper#insertOrder(String,Long)", "file": "src/main/java/com/acme/order/service/OrderServiceImpl.java", "line": 21},
+          {"from": "m2", "to": "m5", "signature": "com.acme.order.mapper.OrderMapper#findIdByBizNo(String)", "file": "src/main/java/com/acme/order/service/OrderServiceImpl.java", "line": 22}
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "target": "http:POST:/api/orders",
+    "entry": "com.acme.order.api.OrderController#create(CreateOrderRequest)",
+    "tables": [
+      {"name": "t_order", "operations": ["READ", "INSERT"]}
+    ],
+    "mustMention": ["订单号已存在", "CREATED", "@Transactional"],
+    "status": "TEST_ONLY"
+  }
+}

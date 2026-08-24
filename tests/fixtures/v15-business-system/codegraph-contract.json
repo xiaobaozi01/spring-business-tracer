@@ -1,0 +1,63 @@
+{
+  "mode": "TEST_ONLY",
+  "version": "1.5.0",
+  "verifiedCapabilities": ["WEBFLUX_ANNOTATED", "KAFKA_GROUPS", "APPLICATION_RUNNER", "REST_TEMPLATE_HTTP", "WEBCLIENT_HTTP", "JPA", "MYBATIS_ANNOTATION", "JDBC_TEMPLATE"],
+  "entries": [
+    {"id": "http:POST:/api/checkouts", "adapter": "SPRING_MVC", "symbol": "checkoutController"},
+    {"id": "http:GET:/api/catalog/{}", "adapter": "SPRING_WEBFLUX", "symbol": "catalogController"},
+    {"id": "runner:catalog-warmup", "adapter": "APPLICATION_RUNNER", "symbol": "warmupRunner", "conditional": "@Profile(warmup)"},
+    {"id": "kafka:main:checkout.created:notification-workers:email", "adapter": "KAFKA", "symbol": "emailListener"},
+    {"id": "kafka:main:checkout.created:notification-workers:sms", "adapter": "KAFKA", "symbol": "smsListener"},
+    {"id": "kafka:main:checkout.created:analytics-workers", "adapter": "KAFKA", "symbol": "analyticsListener"}
+  ],
+  "excludedCandidates": [
+    {"symbol": "restFetch", "reason": "OUTBOUND_HTTP_CLIENT"},
+    {"symbol": "webFetch", "reason": "OUTBOUND_HTTP_CLIENT"},
+    {"symbol": "publish", "reason": "OUTBOUND_KAFKA_PRODUCER"},
+    {"symbol": "publishDynamic", "reason": "OUTBOUND_KAFKA_PRODUCER"}
+  ],
+  "symbols": {
+    "checkoutController": {"qname": "com.acme.gateway.api::CheckoutController::submit", "file": "gateway-service/src/main/java/com/acme/gateway/api/CheckoutController.java", "line": 14},
+    "checkoutService": {"qname": "com.acme.gateway.service::CheckoutService::process", "file": "gateway-service/src/main/java/com/acme/gateway/service/CheckoutService.java", "line": 19},
+    "restFetch": {"qname": "com.acme.gateway.client::CatalogRestClient::fetch", "file": "gateway-service/src/main/java/com/acme/gateway/client/CatalogRestClient.java", "line": 9},
+    "webFetch": {"qname": "com.acme.gateway.client::CatalogWebClient::fetch", "file": "gateway-service/src/main/java/com/acme/gateway/client/CatalogWebClient.java", "line": 9},
+    "publish": {"qname": "com.acme.gateway.messaging::CheckoutPublisher::publish", "file": "gateway-service/src/main/java/com/acme/gateway/messaging/CheckoutPublisher.java", "line": 10},
+    "publishDynamic": {"qname": "com.acme.gateway.messaging::CheckoutPublisher::publishDynamic", "file": "gateway-service/src/main/java/com/acme/gateway/messaging/CheckoutPublisher.java", "line": 11},
+    "catalogController": {"qname": "com.acme.catalog.api::CatalogController::get", "file": "catalog-service/src/main/java/com/acme/catalog/api/CatalogController.java", "line": 16},
+    "catalogFind": {"qname": "com.acme.catalog.service::CatalogService::find", "file": "catalog-service/src/main/java/com/acme/catalog/service/CatalogService.java", "line": 10},
+    "catalogRefresh": {"qname": "com.acme.catalog.service::CatalogService::refresh", "file": "catalog-service/src/main/java/com/acme/catalog/service/CatalogService.java", "line": 11},
+    "mapperFind": {"qname": "com.acme.catalog.mapper::CatalogMapper::findName", "file": "catalog-service/src/main/java/com/acme/catalog/mapper/CatalogMapper.java", "line": 7},
+    "mapperUpdate": {"qname": "com.acme.catalog.mapper::CatalogMapper::markActive", "file": "catalog-service/src/main/java/com/acme/catalog/mapper/CatalogMapper.java", "line": 9},
+    "warmupRunner": {"qname": "com.acme.catalog.job::CatalogWarmupRunner::run", "file": "catalog-service/src/main/java/com/acme/catalog/job/CatalogWarmupRunner.java", "line": 14},
+    "emailListener": {"qname": "com.acme.notification.messaging::EmailCheckoutListener::consume", "file": "notification-service/src/main/java/com/acme/notification/messaging/EmailCheckoutListener.java", "line": 12},
+    "smsListener": {"qname": "com.acme.notification.messaging::SmsCheckoutListener::consume", "file": "notification-service/src/main/java/com/acme/notification/messaging/SmsCheckoutListener.java", "line": 12},
+    "analyticsListener": {"qname": "com.acme.notification.messaging::AnalyticsCheckoutListener::consume", "file": "notification-service/src/main/java/com/acme/notification/messaging/AnalyticsCheckoutListener.java", "line": 12},
+    "recordEmail": {"qname": "com.acme.notification.service::NotificationService::recordEmail", "file": "notification-service/src/main/java/com/acme/notification/service/NotificationService.java", "line": 10},
+    "recordSms": {"qname": "com.acme.notification.service::NotificationService::recordSms", "file": "notification-service/src/main/java/com/acme/notification/service/NotificationService.java", "line": 11},
+    "recordAnalytics": {"qname": "com.acme.notification.service::NotificationService::recordAnalytics", "file": "notification-service/src/main/java/com/acme/notification/service/NotificationService.java", "line": 12},
+    "jdbcInsert": {"qname": "com.acme.notification.repository::NotificationRepository::insert", "file": "notification-service/src/main/java/com/acme/notification/repository/NotificationRepository.java", "line": 10}
+  },
+  "javaEdges": [
+    ["checkoutController", "checkoutService"], ["checkoutService", "restFetch"], ["checkoutService", "webFetch"], ["checkoutService", "publish"],
+    ["catalogController", "catalogFind"], ["warmupRunner", "catalogRefresh"],
+    ["emailListener", "recordEmail"], ["recordEmail", "jdbcInsert"], ["smsListener", "recordSms"], ["recordSms", "jdbcInsert"], ["analyticsListener", "recordAnalytics"], ["recordAnalytics", "jdbcInsert"]
+  ],
+  "codeGraphSpecialEdges": [["catalogFind", "mapperFind"], ["catalogRefresh", "mapperUpdate"]],
+  "logicalBoundaries": [
+    {"kind": "REST_TEMPLATE_HTTP", "key": "GET catalog-service /api/catalog/{}", "source": "restFetch", "target": "catalogController", "deliverySemantics": "DIRECT"},
+    {"kind": "WEBCLIENT_HTTP", "key": "GET catalog-service /api/catalog/{}", "source": "webFetch", "target": "catalogController", "deliverySemantics": "DIRECT"},
+    {"kind": "KAFKA", "key": "main:checkout.created:notification-workers", "channelKey": "main:checkout.created", "consumerGroup": "notification-workers", "source": "publish", "targets": ["emailListener", "smsListener"], "deliverySemantics": "COMPETING_ONE_OF"},
+    {"kind": "KAFKA", "key": "main:checkout.created:analytics-workers", "channelKey": "main:checkout.created", "consumerGroup": "analytics-workers", "source": "publish", "target": "analyticsListener", "deliverySemantics": "FAN_OUT_GROUPS"}
+  ],
+  "unresolvedBoundaries": [
+    {"source": "restFetch", "case": "dynamic-url-parameter", "status": "PARTIAL"},
+    {"source": "publishDynamic", "case": "dynamic-topic-parameter", "status": "PARTIAL"}
+  ],
+  "persistenceAccesses": [
+    {"adapter": "JPA", "symbol": "checkoutService", "resource": "db:gateway:table:sales.checkout_record", "operation": "UPSERT_OR_UPDATE"},
+    {"adapter": "MYBATIS_ANNOTATION", "symbol": "mapperFind", "resource": "db:catalog:table:catalog.product", "operation": "READ"},
+    {"adapter": "MYBATIS_ANNOTATION", "symbol": "mapperUpdate", "resource": "db:catalog:table:catalog.product", "operation": "UPDATE"},
+    {"adapter": "JDBC_TEMPLATE", "symbol": "jdbcInsert", "resource": "db:notification:table:notification.delivery_log", "operation": "INSERT"}
+  ],
+  "dynamicPersistenceCases": [{"file": "NotificationRepository.java", "method": "dynamicCount", "classification": "DYNAMIC_TABLE", "status": "PARTIAL"}]
+}

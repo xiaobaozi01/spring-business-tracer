@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@opencode-ai/plugin": "1.16.0",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "ajv": "8.18.0"
+  }
+}

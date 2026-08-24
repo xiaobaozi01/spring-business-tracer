@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.acme.inventory.mapper.InventoryMapper">
+    <select id="findAvailable" resultType="int">
+        SELECT available FROM inventory.stock_item WHERE sku = #{sku}
+    </select>
+    <update id="decreaseStock">
+        UPDATE inventory.stock_item SET available = available - #{quantity} WHERE sku = #{sku}
+    </update>
+    <insert id="insertReservation">
+        INSERT INTO inventory.stock_reservation (sku, quantity, status)
+        VALUES (#{sku}, #{quantity}, 'RESERVED')
+    </insert>
+    <select id="findExpiredReservations" resultType="string">
+        SELECT sku FROM inventory.stock_reservation WHERE expires_at &lt; CURRENT_TIMESTAMP
+    </select>
+    <update id="restoreStock">
+        UPDATE inventory.stock_item SET available = available + 1 WHERE sku = #{sku}
+    </update>
+    <delete id="deleteReservation">
+        DELETE FROM inventory.stock_reservation WHERE sku = #{sku}
+    </delete>
+</mapper>

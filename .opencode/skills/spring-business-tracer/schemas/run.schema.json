@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/run.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "phase", "configHash", "sourceSnapshot", "indexFingerprint", "toolkitFingerprint", "resolutionContextHash", "adapterRegistryFingerprint", "mode", "units"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "phase": {"enum": ["CREATED", "PLANNED", "TRACING", "VALIDATING", "PUBLISHING", "PAUSE_REQUESTED", "PAUSED", "FINALIZING", "COMPLETE", "PARTIAL", "FAILED", "STALE"]},
+    "configHash": {"type": "string", "minLength": 1},
+    "sourceSnapshot": {"type": "string", "minLength": 1},
+    "indexFingerprint": {"type": "string", "minLength": 1},
+    "toolkitFingerprint": {"type": "string", "minLength": 1},
+    "resolutionContextHash": {"type": "string", "minLength": 1},
+    "adapterRegistryFingerprint": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["FULL", "INCREMENTAL"]},
+    "manifestHash": {"type": ["string", "null"]},
+    "indexHash": {"type": ["string", "null"]},
+    "tombstones": {"type": "object", "required": ["entryIds", "nodeIds", "edgeIds"], "properties": {"entryIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "nodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "edgeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}}},
+    "retryLimit": {"type": "integer", "minimum": 0, "maximum": 10},
+    "units": {"type": "object", "additionalProperties": {"$ref": "#/$defs/unit"}},
+    "audits": {
+      "type": "object",
+      "required": ["coverageHash", "boundaryHash", "configHash"],
+      "properties": {
+        "coverageHash": {"type": ["string", "null"]},
+        "boundaryHash": {"type": ["string", "null"]},
+        "configHash": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "$defs": {
+    "unit": {
+      "type": "object",
+      "required": ["id", "service", "kind", "status", "attempts", "fingerprintToken"],
+      "properties": {
+        "id": {"type": "string"},
+        "service": {"type": "string"},
+        "kind": {"type": "string"},
+        "status": {"enum": ["PENDING", "LEASED", "TRACED", "VERIFIED", "PUBLISHED", "REUSED", "RETRYABLE_FAILED", "BLOCKED", "FAILED", "STALE"]},
+        "attempts": {"type": "integer", "minimum": 0},
+        "fingerprintToken": {"type": ["string", "null"]},
+        "artifactHash": {"type": ["string", "null"]},
+        "validationHash": {"type": ["string", "null"]},
+        "documentHash": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

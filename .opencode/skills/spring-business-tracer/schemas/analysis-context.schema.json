@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/analysis-context.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "activeProfiles", "propertySources"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "activeProfiles": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "propertySources": {"type": "array", "items": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.env(?:\\.|$))(?!.*\\.\\.).*\\.(?:properties|ya?ml)$"}, "uniqueItems": true},
+    "optionalSources": {"type": "boolean"}
+  }
+}

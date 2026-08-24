@@ -1,0 +1,8 @@
+syntax = "proto3";
+package acme.order;
+service OrderQuery {
+  rpc Find (FindRequest) returns (FindReply);
+  rpc Watch (FindRequest) returns (stream FindReply);
+}
+message FindRequest { string id = 1; }
+message FindReply { string value = 1; }

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/adapter-definition.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "annotationFqcns", "interfaceFqcns", "methodNames", "triggerFields", "outboundOnly"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$"},
+    "annotationFqcns": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$.]+$"}, "uniqueItems": true},
+    "interfaceFqcns": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$.]+$"}, "uniqueItems": true},
+    "methodNames": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$"}, "uniqueItems": true},
+    "triggerFields": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$"}, "uniqueItems": true},
+    "outboundOnly": {"type": "boolean"}
+  }
+}

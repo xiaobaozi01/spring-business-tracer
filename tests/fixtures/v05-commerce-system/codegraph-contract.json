@@ -1,0 +1,88 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "contract-replay",
+  "recordedWith": "CodeGraph CLI 1.5.0",
+  "note": "这是实际索引后的确定性验收契约，不替代正式运行时的Code Graph查询。",
+  "services": ["order-service", "customer-service", "inventory-service", "notification-service"],
+  "capabilities": ["status", "symbols", "locations", "callees", "callers", "impact"],
+  "entries": [
+    {"id": "o1", "service": "order-service", "kind": "HTTP", "key": "POST /api/orders", "symbol": "com.acme.order.api::OrderController::create", "file": "order-service/src/main/java/com/acme/order/api/OrderController.java", "line": 18, "contains": "@PostMapping"},
+    {"id": "c1", "service": "customer-service", "kind": "HTTP", "key": "GET /internal/customers/{id}/active", "symbol": "com.acme.customer.api::CustomerInternalController::requireActive", "file": "customer-service/src/main/java/com/acme/customer/api/CustomerInternalController.java", "line": 18, "contains": "@GetMapping"},
+    {"id": "i1", "service": "inventory-service", "kind": "HTTP", "key": "POST /internal/inventory/reserve", "symbol": "com.acme.inventory.api::InventoryInternalController::reserve", "file": "inventory-service/src/main/java/com/acme/inventory/api/InventoryInternalController.java", "line": 18, "contains": "@PostMapping"},
+    {"id": "n1", "service": "notification-service", "kind": "RABBIT", "key": "order.created", "symbol": "com.acme.notification.messaging::OrderCreatedConsumer::consume", "file": "notification-service/src/main/java/com/acme/notification/messaging/OrderCreatedConsumer.java", "line": 15, "contains": "@RabbitListener"},
+    {"id": "i6", "service": "inventory-service", "kind": "SCHEDULED", "key": "0 */5 * * * *", "symbol": "com.acme.inventory.job::ReservationExpiryJob::releaseExpired", "file": "inventory-service/src/main/java/com/acme/inventory/job/ReservationExpiryJob.java", "line": 15, "contains": "@Scheduled"},
+    {"id": "o10", "service": "order-service", "kind": "SPRING_EVENT", "key": "com.acme.order.event.OrderCreatedEvent", "symbol": "com.acme.order.event::OrderAuditListener::onCreated", "file": "order-service/src/main/java/com/acme/order/event/OrderAuditListener.java", "line": 15, "contains": "@EventListener"}
+  ],
+  "excludedCandidates": [
+    {"symbolId": "com.acme.order.client::CustomerClient::requireActive", "kind": "route", "reason": "OUTBOUND_FEIGN_CLIENT", "file": "order-service/src/main/java/com/acme/order/client/CustomerClient.java", "line": 9},
+    {"symbolId": "com.acme.order.client::InventoryClient::reserve", "kind": "route", "reason": "OUTBOUND_FEIGN_CLIENT", "file": "order-service/src/main/java/com/acme/order/client/InventoryClient.java", "line": 10}
+  ],
+  "symbols": {
+    "o1": {"qname": "com.acme.order.api::OrderController::create", "file": "order-service/src/main/java/com/acme/order/api/OrderController.java", "line": 18},
+    "o2": {"qname": "com.acme.order.service::CheckoutService::create", "file": "order-service/src/main/java/com/acme/order/service/CheckoutService.java", "line": 29},
+    "o3": {"qname": "com.acme.order.client::CustomerClient::requireActive", "file": "order-service/src/main/java/com/acme/order/client/CustomerClient.java", "line": 9},
+    "o4": {"qname": "com.acme.order.client::InventoryClient::reserve", "file": "order-service/src/main/java/com/acme/order/client/InventoryClient.java", "line": 10},
+    "o5": {"qname": "com.acme.order.mapper::OrderMapper::insertOrder", "file": "order-service/src/main/java/com/acme/order/mapper/OrderMapper.java", "line": 8},
+    "o5x": {"qname": "com.acme.order.mapper.OrderMapper::insertOrder", "file": "order-service/src/main/resources/mapper/OrderMapper.xml", "line": 4},
+    "o6": {"qname": "com.acme.order.messaging::OrderMessagePublisher::publish", "file": "order-service/src/main/java/com/acme/order/messaging/OrderMessagePublisher.java", "line": 14},
+    "o8": {"qname": "com.acme.order.event::OrderEventPublisher::publish", "file": "order-service/src/main/java/com/acme/order/event/OrderEventPublisher.java", "line": 14},
+    "o10": {"qname": "com.acme.order.event::OrderAuditListener::onCreated", "file": "order-service/src/main/java/com/acme/order/event/OrderAuditListener.java", "line": 15},
+    "o11": {"qname": "com.acme.order.mapper::AuditMapper::insertAudit", "file": "order-service/src/main/java/com/acme/order/mapper/AuditMapper.java", "line": 8},
+    "o11x": {"qname": "com.acme.order.mapper.AuditMapper::insertAudit", "file": "order-service/src/main/resources/mapper/AuditMapper.xml", "line": 4},
+    "c1": {"qname": "com.acme.customer.api::CustomerInternalController::requireActive", "file": "customer-service/src/main/java/com/acme/customer/api/CustomerInternalController.java", "line": 18},
+    "c2": {"qname": "com.acme.customer.service::CustomerService::requireActive", "file": "customer-service/src/main/java/com/acme/customer/service/CustomerService.java", "line": 16},
+    "c3": {"qname": "com.acme.customer.repository::CustomerAccountRepository::findById", "file": "customer-service/src/main/java/com/acme/customer/repository/CustomerAccountRepository.java", "line": 9},
+    "c4": {"qname": "com.acme.customer.domain::CustomerAccount::isActive", "file": "customer-service/src/main/java/com/acme/customer/domain/CustomerAccount.java", "line": 14},
+    "i1": {"qname": "com.acme.inventory.api::InventoryInternalController::reserve", "file": "inventory-service/src/main/java/com/acme/inventory/api/InventoryInternalController.java", "line": 18},
+    "i2": {"qname": "com.acme.inventory.service::InventoryService::reserve", "file": "inventory-service/src/main/java/com/acme/inventory/service/InventoryService.java", "line": 17},
+    "i3": {"qname": "com.acme.inventory.mapper::InventoryMapper::findAvailable", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 10},
+    "i4": {"qname": "com.acme.inventory.mapper::InventoryMapper::decreaseStock", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 11},
+    "i5": {"qname": "com.acme.inventory.mapper::InventoryMapper::insertReservation", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 12},
+    "i6": {"qname": "com.acme.inventory.job::ReservationExpiryJob::releaseExpired", "file": "inventory-service/src/main/java/com/acme/inventory/job/ReservationExpiryJob.java", "line": 15},
+    "i7": {"qname": "com.acme.inventory.service::InventoryService::releaseExpired", "file": "inventory-service/src/main/java/com/acme/inventory/service/InventoryService.java", "line": 27},
+    "i8": {"qname": "com.acme.inventory.mapper::InventoryMapper::findExpiredReservations", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 13},
+    "i9": {"qname": "com.acme.inventory.mapper::InventoryMapper::restoreStock", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 14},
+    "i10": {"qname": "com.acme.inventory.mapper::InventoryMapper::deleteReservation", "file": "inventory-service/src/main/java/com/acme/inventory/mapper/InventoryMapper.java", "line": 15},
+    "n1": {"qname": "com.acme.notification.messaging::OrderCreatedConsumer::consume", "file": "notification-service/src/main/java/com/acme/notification/messaging/OrderCreatedConsumer.java", "line": 15},
+    "n2": {"qname": "com.acme.notification.service::NotificationService::record", "file": "notification-service/src/main/java/com/acme/notification/service/NotificationService.java", "line": 15},
+    "n3": {"qname": "com.acme.notification.mapper::NotificationMapper::insertDelivery", "file": "notification-service/src/main/java/com/acme/notification/mapper/NotificationMapper.java", "line": 8}
+  },
+  "javaEdges": [
+    ["o1", "o2"], ["o2", "o3"], ["o2", "o4"], ["o2", "o5"], ["o2", "o6"], ["o2", "o8"], ["o10", "o11"],
+    ["c1", "c2"], ["c2", "c3"], ["c2", "c4"],
+    ["i1", "i2"], ["i2", "i3"], ["i2", "i4"], ["i2", "i5"], ["i6", "i7"], ["i7", "i8"], ["i7", "i9"], ["i7", "i10"],
+    ["n1", "n2"], ["n2", "n3"]
+  ],
+  "codeGraphSpecialEdges": [
+    {"from": "o5", "to": "o5x", "kind": "MYBATIS_XML_MAPPING", "note": "Code Graph映射边，不是Java调用边"},
+    {"from": "o11", "to": "o11x", "kind": "MYBATIS_XML_MAPPING", "note": "Code Graph映射边，不是Java调用边"},
+    {"from": "o8", "to": "o10", "kind": "FRAMEWORK_EVENT_DISPATCH", "note": "Code Graph框架分派结果，同时保留双侧逻辑边界语义"}
+  ],
+  "logicalBoundaries": [
+    {"id": "b-feign-customer", "kind": "FEIGN_HTTP", "key": "GET /internal/customers/{id}/active", "sourceService": "order-service", "targetService": "customer-service", "source": "o3", "target": "c1", "status": "VERIFIED", "sourceEvidence": {"file": "order-service/src/main/java/com/acme/order/client/CustomerClient.java", "line": 7, "contains": "/internal/customers"}, "targetEvidence": {"file": "customer-service/src/main/java/com/acme/customer/api/CustomerInternalController.java", "line": 10, "contains": "/internal/customers"}},
+    {"id": "b-feign-inventory", "kind": "FEIGN_HTTP", "key": "POST /internal/inventory/reserve", "sourceService": "order-service", "targetService": "inventory-service", "source": "o4", "target": "i1", "status": "VERIFIED", "sourceEvidence": {"file": "order-service/src/main/java/com/acme/order/client/InventoryClient.java", "line": 8, "contains": "/internal/inventory"}, "targetEvidence": {"file": "inventory-service/src/main/java/com/acme/inventory/api/InventoryInternalController.java", "line": 10, "contains": "/internal/inventory"}},
+    {"id": "b-rabbit-order-created", "kind": "RABBIT", "key": "exchange=<default>;routingKey=order.created;queue=order.created;binding=default-exchange-implicit", "sourceService": "order-service", "targetService": "notification-service", "source": "o6", "target": "n1", "status": "VERIFIED", "sourceEvidence": {"file": "order-service/src/main/java/com/acme/order/messaging/OrderMessagePublisher.java", "line": 15, "contains": "convertAndSend(\"\", \"order.created\"", "note": "空exchange参数证明使用RabbitMQ默认交换机"}, "targetEvidence": {"file": "notification-service/src/main/java/com/acme/notification/messaging/OrderCreatedConsumer.java", "line": 15, "contains": "order.created"}, "additionalEvidence": [{"file": "notification-service/src/main/java/com/acme/notification/config/RabbitTopology.java", "line": 11, "contains": "new Queue(\"order.created\", true)", "note": "RabbitMQ默认交换机按队列名提供隐式binding"}]},
+    {"id": "b-event-order-created", "kind": "SPRING_EVENT", "key": "com.acme.order.event.OrderCreatedEvent", "sourceService": "order-service", "targetService": "order-service", "source": "o8", "target": "o10", "status": "VERIFIED", "sourceEvidence": {"file": "order-service/src/main/java/com/acme/order/event/OrderEventPublisher.java", "line": 15, "contains": "OrderCreatedEvent"}, "targetEvidence": {"file": "order-service/src/main/java/com/acme/order/event/OrderAuditListener.java", "line": 16, "contains": "OrderCreatedEvent"}}
+  ],
+  "tables": [
+    {"name": "sales.t_order", "operations": ["INSERT"], "symbols": ["o5"], "file": "order-service/src/main/resources/mapper/OrderMapper.xml", "line": 5},
+    {"name": "sales.order_audit", "operations": ["INSERT"], "symbols": ["o11"], "file": "order-service/src/main/resources/mapper/AuditMapper.xml", "line": 5},
+    {"name": "crm.customer_account", "operations": ["READ"], "symbols": ["c3"], "file": "customer-service/src/main/java/com/acme/customer/domain/CustomerAccount.java", "line": 8},
+    {"name": "inventory.stock_item", "operations": ["READ", "UPDATE"], "symbols": ["i3", "i4", "i9"], "file": "inventory-service/src/main/resources/mapper/InventoryMapper.xml", "line": 5},
+    {"name": "inventory.stock_reservation", "operations": ["INSERT", "READ", "DELETE"], "symbols": ["i5", "i8", "i10"], "file": "inventory-service/src/main/resources/mapper/InventoryMapper.xml", "line": 11},
+    {"name": "notify.delivery_log", "operations": ["INSERT"], "symbols": ["n3"], "file": "notification-service/src/main/resources/mapper/NotificationMapper.xml", "line": 5}
+  ],
+  "impactCases": [
+    {"target": "i4", "direction": "upstream", "directCodeGraphEntries": ["i1"], "boundaryExpandedEntries": ["o1"], "requiresCallers": true},
+    {"target": "inventory.stock_item", "direction": "upstream", "expectedEntries": ["o1", "i1", "i6"], "requiresCallers": true},
+    {"target": "b-rabbit-order-created", "direction": "both", "upstreamEntries": ["o1"], "downstreamEntries": ["n1"], "tables": ["notify.delivery_log"]},
+    {"target": "b-event-order-created", "direction": "both", "upstreamEntries": ["o1"], "downstreamEntries": ["o10"], "tables": ["sales.order_audit"]},
+    {"target": "o3", "direction": "both", "upstreamEntries": ["o1"], "downstreamEntries": ["c1"], "tables": ["crm.customer_account"], "requiresCallers": true}
+  ],
+  "realCodeGraphProbes": [
+    {"command": "callees", "symbol": "com.acme.order.api::OrderController::create", "mustContainFiles": ["order-service/src/main/java/com/acme/order/service/CheckoutService.java"]},
+    {"command": "callees", "symbol": "com.acme.order.service::CheckoutService::create", "mustContainFiles": ["order-service/src/main/java/com/acme/order/client/CustomerClient.java", "order-service/src/main/java/com/acme/order/client/InventoryClient.java", "order-service/src/main/java/com/acme/order/mapper/OrderMapper.java", "order-service/src/main/java/com/acme/order/messaging/OrderMessagePublisher.java", "order-service/src/main/java/com/acme/order/event/OrderEventPublisher.java"]},
+    {"command": "callers", "symbol": "com.acme.inventory.mapper::InventoryMapper::decreaseStock", "mustContainFiles": ["inventory-service/src/main/java/com/acme/inventory/service/InventoryService.java"]},
+    {"command": "impact", "symbol": "com.acme.inventory.mapper::InventoryMapper::decreaseStock", "depth": 6, "mustContainFiles": ["inventory-service/src/main/java/com/acme/inventory/api/InventoryInternalController.java"]}
+  ]
+}

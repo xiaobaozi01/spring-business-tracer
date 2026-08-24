@@ -1,0 +1,23 @@
+spring:
+  cloud:
+    gateway:
+      routes:
+        - id: order-static
+          uri: http://order-service
+          predicates:
+            - Path=/gateway/orders/**
+            - Method=GET
+          filters:
+            - StripPrefix=1
+---
+spring:
+  config:
+    activate:
+      on-profile: dynamic
+  cloud:
+    gateway:
+      routes:
+        - id: dynamic-rejected
+          uri: ${REMOTE_ORDER_URL}
+          filters:
+            - name: CustomRuntimeFilter

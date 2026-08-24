@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "contract-replay",
+  "workspace": "tests/fixtures/jdbc-inventory-service",
+  "capabilities": {
+    "status": "codegraph_status",
+    "methodSymbols": "codegraph_search_symbols",
+    "callees": "codegraph_callees",
+    "sourceLocations": true,
+    "implementations": "codegraph_implementations",
+    "callers": "codegraph_callers"
+  },
+  "queries": [
+    {
+      "tool": "codegraph_status",
+      "args": {"workspace": "tests/fixtures/jdbc-inventory-service"},
+      "result": {"indexed": true, "language": "java", "symbolCount": 9}
+    },
+    {
+      "tool": "codegraph_search_symbols",
+      "args": {"query": "com.acme.inventory.api.InventoryController#reserve"},
+      "result": {
+        "symbols": [
+          {"id": "i1", "signature": "com.acme.inventory.api.InventoryController#reserve(String,int)", "file": "src/main/java/com/acme/inventory/api/InventoryController.java", "line": 19}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "i1"},
+      "result": {
+        "edges": [
+          {"from": "i1", "to": "i2", "signature": "com.acme.inventory.service.InventoryService#reserve(String,int)", "file": "src/main/java/com/acme/inventory/api/InventoryController.java", "line": 20}
+        ]
+      }
+    },
+    {
+      "tool": "codegraph_callees",
+      "args": {"symbolId": "i2"},
+      "result": {
+        "edges": [
+          {"from": "i2", "to": "i3", "signature": "com.acme.inventory.repository.InventoryRepository#findAvailable(String)", "file": "src/main/java/com/acme/inventory/service/InventoryService.java", "line": 17},
+          {"from": "i2", "to": "i4", "signature": "com.acme.inventory.repository.InventoryRepository#decreaseAvailable(String,int)", "file": "src/main/java/com/acme/inventory/service/InventoryService.java", "line": 21},
+          {"from": "i2", "to": "i3", "signature": "com.acme.inventory.repository.InventoryRepository#findAvailable(String)", "file": "src/main/java/com/acme/inventory/service/InventoryService.java", "line": 22}
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "target": "http:POST:/api/inventory/reserve",
+    "entry": "com.acme.inventory.api.InventoryController#reserve(String,int)",
+    "tables": [
+      {"name": "inventory.stock_item", "operations": ["READ", "UPDATE"]}
+    ],
+    "mustMention": ["库存不足", "@Transactional"],
+    "status": "TEST_ONLY"
+  }
+}

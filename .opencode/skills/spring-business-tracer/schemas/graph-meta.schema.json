@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "spring-business-tracer/graph-meta.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "fingerprints", "nodeCount", "edgeCount", "entryIds", "topologyRootHash", "graphHash"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "runId": {"type": "string"},
+    "fingerprints": {"type": "object", "required": ["config", "source", "index", "toolkit", "resolvedConfig", "adapterRegistry"]},
+    "nodeCount": {"type": "integer", "minimum": 0},
+    "edgeCount": {"type": "integer", "minimum": 0},
+    "entryIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "topologyRootHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "graphHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

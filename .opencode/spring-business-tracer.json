@@ -1,0 +1,144 @@
+{
+  "version": "2.0.0",
+  "language": "java",
+  "workspace": {
+    "services": [],
+    "autoDiscoverSingleService": true,
+    "requireAllServiceRootsIndexed": true
+  },
+  "output": {
+    "directory": "docs/spring-business",
+    "language": "zh-CN",
+    "writeEvidence": true,
+    "manifest": "manifest.json"
+  },
+  "codeGraph": {
+    "serverNamePattern": "codegraph|code-graph|code_graph",
+    "requiredCapabilities": ["methodSymbols", "callees", "callers", "sourceLocations"],
+    "queryLimit": 101,
+    "requireCompleteStatus": true,
+    "allowNativeCallGraphFallback": false,
+    "allowTextSearchCallGraphFallback": false
+  },
+  "analysis": {
+    "maxDepth": 40,
+    "maxBranches": 100,
+    "includeTests": false,
+    "includeGenerated": false,
+    "collapsePackages": [
+      "java.",
+      "javax.",
+      "jakarta.",
+      "org.springframework.",
+      "org.slf4j."
+    ]
+  },
+  "analysisContexts": {
+    "defaultContext": "default",
+    "definitions": [
+      {
+        "id": "default",
+        "activeProfiles": ["default"],
+        "propertySources": [],
+        "optionalSources": true
+      }
+    ]
+  },
+  "configResolution": {
+    "externalSourcePolicy": "PARTIAL",
+    "environmentPolicy": "DENY",
+    "secretPolicy": "HASH_ONLY",
+    "executeSpel": false,
+    "maxSourceBytes": 1048576,
+    "maxTotalBytes": 8388608
+  },
+  "adapterRegistry": {
+    "builtInVersion": "2.0.0",
+    "allowScripts": false,
+    "customDefinitions": []
+  },
+  "entrypoints": {
+    "enabledAdapters": [
+      "SPRING_MVC",
+      "SPRING_WEBFLUX",
+      "KAFKA",
+      "RABBIT",
+      "JMS",
+      "ROCKETMQ",
+      "SCHEDULED",
+      "QUARTZ",
+      "XXL_JOB",
+      "SPRING_EVENT",
+      "DUBBO",
+      "GRPC",
+      "GRAPHQL",
+      "APPLICATION_RUNNER"
+    ],
+    "verifiedAdapters": ["SPRING_MVC", "SPRING_WEBFLUX_ANNOTATED", "WEBFLUX_FUNCTIONAL_STATIC_HANDLER", "KAFKA_LISTENER", "RABBIT_LISTENER", "JMS_STATIC_LISTENER", "SCHEDULED", "QUARTZ_STATIC_JOB_TRIGGER", "SPRING_EVENT", "GRPC_UNARY_PROTO", "GRAPHQL_ANNOTATED_ROOT", "APPLICATION_RUNNER"],
+    "experimentalAdapters": ["ROCKETMQ", "XXL_JOB", "DUBBO", "KAFKA_STREAMS"],
+    "customAnnotations": []
+  },
+  "crossService": {
+    "enabled": true,
+    "kinds": ["FEIGN_HTTP", "HTTP", "RABBIT", "KAFKA", "JMS", "ROCKETMQ", "DUBBO", "GRPC", "SPRING_EVENT"],
+    "requireTwoSidedEvidence": true,
+    "unresolvedPolicy": "PARTIAL",
+    "verifiedKinds": ["FEIGN_HTTP", "REST_TEMPLATE_HTTP", "WEBCLIENT_HTTP", "GATEWAY_HTTP", "RABBIT", "KAFKA", "JMS", "GRPC", "SPRING_EVENT"],
+    "kafka": {
+      "requireClusterAlias": true,
+      "consumerGroupSemantics": true,
+      "dynamicDestinationPolicy": "PARTIAL"
+    }
+  },
+  "persistence": {
+    "verifiedAdapters": ["JPA", "MYBATIS_XML", "MYBATIS_ANNOTATION", "JDBC_TEMPLATE"],
+    "dynamicIdentifierPolicy": "PARTIAL"
+  },
+  "incremental": {
+    "enabled": true,
+    "strategy": "SERVICE_CLOSURE",
+    "requireFullEntryRediscovery": true,
+    "legacyBaselinePolicy": "FULL_REBASE"
+  },
+  "publication": {
+    "stagingDirectory": "docs/spring-business/.staging",
+    "snapshotDirectory": "docs/spring-business/snapshots",
+    "currentPointer": "docs/spring-business/current.json",
+    "writeIndex": true,
+    "writeManifest": true
+  },
+  "graph": {
+    "formatVersion": 2,
+    "sharded": true,
+    "shardPrefixLength": 2,
+    "diffEnabled": true,
+    "pathQueryMaxDepth": 20,
+    "pathQueryMaxResults": 100,
+    "recordTombstones": true,
+    "cursorBoundToSnapshot": true,
+    "queryWallClockMs": 2000,
+    "maxShardBytes": 8388608
+  },
+  "batching": {
+    "batchSize": 10,
+    "maxConcurrentSubagents": 3,
+    "leaseSeconds": 600,
+    "heartbeatSeconds": 120,
+    "retryLimit": 2,
+    "checkpointAfterEachEntry": true,
+    "requireClose": true,
+    "operationJournalLimit": 2000
+  },
+  "resume": {
+    "stateDirectory": ".opencode/.cache/spring-business-tracer/runs",
+    "requireConfigHash": true,
+    "requireSourceSnapshot": true,
+    "requireIndexFingerprint": true,
+    "requireToolkitFingerprint": true
+  },
+  "verification": {
+    "required": true,
+    "validators": ["trace", "coverage", "boundary", "incremental", "config"],
+    "publishOnlyVerified": true
+  }
+}

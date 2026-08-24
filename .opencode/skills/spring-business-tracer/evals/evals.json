@@ -1,0 +1,14 @@
+{
+  "skill_name": "spring-business-tracer",
+  "version": "2.0.0",
+  "evals": [
+    {"id": 1, "name": "v15-regression", "prompt": "这是TEST_ONLY回归。说明V1.5三服务合约在V2下如何验收，且不能把旧run直接升级成V2事实。", "expected_output": "逐边重查12条Java边；旧run只读；V2首次FULL_REBASE并生成新的配置审计、provenance与topologyRootHash。", "files": ["tests/fixtures/v15-business-system", ".opencode/skills/spring-business-tracer/references/migration.md"]},
+    {"id": 2, "name": "profile-placeholder", "prompt": "prod-cn上下文含多文档YAML、覆盖properties、嵌套placeholder、默认值、循环、环境变量和password。给出解析结果与门禁。", "expected_output": "按来源/profile优先级确定性解析；循环和环境变量为PARTIAL；不读环境；password仅valueHash；结果绑定resolutionContextHash。", "files": [".opencode/skills/spring-business-tracer/references/config-resolution.md"]},
+    {"id": 3, "name": "typed-message-topology", "prompt": "同Kafka topic有两个group，其中一个group有两个listener。用V2拓扑表达发送、订阅和消费语义。", "expected_output": "建立MESSAGE_CHANNEL和按group分开的MESSAGE_SUBSCRIPTION；PUBLISHES/DELIVERS_TO/CONSUMES分层；同group双listener为COMPETING_ONE_OF/POTENTIAL。", "files": [".opencode/skills/spring-business-tracer/references/topology-v2.md", ".opencode/skills/spring-business-tracer/references/cross-service.md"]},
+    {"id": 4, "name": "verified-adapter-profiles", "prompt": "评估静态functional WebFlux、动态router、JMS placeholder destination、Quartz静态trigger、GraphQL annotated root、gRPC unary和streaming。", "expected_output": "只对严格静态Profile标VERIFIED；动态router/destination/runtime wiring与gRPC streaming保留PARTIAL并给原因。", "files": [".opencode/skills/spring-business-tracer/references/adapter-profiles-v2.md"]},
+    {"id": 5, "name": "sharded-query-cursor", "prompt": "在大拓扑中查询节点邻居并翻页，然后快照发生变化。说明读取范围、cursor和完整性检查。", "expected_output": "只读目标node/adjacency/edge/provenance shard；逐shard验hash；cursor绑定topologyRootHash与queryHash，换快照必须拒绝。", "files": [".opencode/skills/spring-business-tracer/references/topology-v2.md"]},
+    {"id": 6, "name": "incremental-config-dependency", "prompt": "服务源码未变，但billing.queue变化；入口A依赖该键、入口B不依赖，另有unowned dependency。计算增量集合。", "expected_output": "A失效，B仅在配置依赖证明闭合时复用；unowned/shared依赖保守失效；changedConfigKeys和集合由独立validator认证。", "files": [".opencode/skills/spring-business-tracer/references/incremental.md"]},
+    {"id": 7, "name": "provenance-explain", "prompt": "解释一条gRPC调用和一条JPA表访问为什么存在，并说明完整性信任边界。", "expected_output": "展示typed edge、assurance、context、Code Graph/协议/持久化证据与validator report hash；仅声称工作区内自洽，不声称外部签名。", "files": [".opencode/skills/spring-business-tracer/references/topology-v2.md", ".opencode/skills/spring-business-tracer/references/validation.md"]},
+    {"id": 8, "name": "migration-v20", "prompt": "评审V0.5/V1.0/V1.5到V2.0的dry-run、apply、NOOP、崩溃恢复和旧run策略。", "expected_output": "配置带锁备份并原子迁移；旧run/snapshot只读；不补造provenance；首次V2 FULL_REBASE；同版重复NOOP。", "files": [".opencode/skills/spring-business-tracer/references/migration.md"]}
+  ]
+}
