@@ -6,7 +6,7 @@
 
 ## 接入项目
 
-把本仓库的 `.opencode/` 复制到目标 Java Spring 项目根目录；多服务仓库随后编辑 `.opencode/spring-business-tracer.json` 的 `workspace.services`，为每个服务填写稳定 `id` 和相对 `root`。安装锁定依赖并重启 OpenCode（Agent、Skill、Plugin 和命令只在启动时加载）：
+把本仓库的 `.opencode/` 复制到目标Java Spring项目根目录；可部署应用写入`workspace.services`，mall-common、mall-mbg等公共源码模块写入`workspace.sharedModules`，不能当服务。安装锁定依赖并重启OpenCode：
 
 ```bash
 cd .opencode
@@ -29,10 +29,10 @@ npm ci
 - 按Spring profile/本地property source确定性解析placeholder，秘密值只输出hash；环境变量、`.env`、远程配置和SpEL失败关闭。
 - verified能力细分到Profile：新增静态functional WebFlux、JMS listener、Quartz静态trigger、GraphQL root和gRPC unary；动态变体保持PARTIAL。
 - 在所有服务源码均位于工作区并已被 Code Graph 索引时，继续追踪 Feign/HTTP、MQ、RPC 和 Event 跨服务边界。
-- 按 TRACE/VALIDATE/PUBLISH 三阶段租约分批处理，支持heartbeat、批次关闭、安全暂停、崩溃恢复和operationId幂等。
+- 入口发现先按服务租约并独立checkpoint，插件重算结构化清单数量；随后按TRACE/VALIDATE/PUBLISH三阶段租约处理。中断后只重试未完成服务/入口。
 - 配置、逐服务源码、Code Graph索引、工具包、解析上下文和adapter registry在批次边界防漂移。
 - 由7个受限Subagent独立发现、追踪、配置复算和验证；认证报告只能由对应Validator/Auditor直接提交。
-- 仅基于同版V2 COMPLETE基线，按serviceClosure与configDependencyIds保守增量复用；V0.5/V1.0/V1.5 baseline强制FULL_REBASE。
+- 仅基于同版V2 COMPLETE基线，按serviceClosure、sharedModuleClosure与configDependencyIds保守增量复用；V0.5/V1.0/V1.5 baseline强制FULL_REBASE。
 - 输出中文文档与V2类型化拓扑；SERVICE/ENTRY/端点/消息channel+subscription/RPC/Job/Data Resource分开建模，provenance单独分片。
 - 精确节点、邻接和解释查询只读目标shard，稳定cursor绑定topologyRootHash；完整性明确为工作区内自洽校验而非外部签名。
 - 识别Feign、RestTemplate、WebClient、Rabbit、Kafka和Spring Event双侧边界；Kafka按cluster/topic/group表达竞争消费语义。
@@ -84,6 +84,8 @@ Worker 不能验证自己，Validator 不能发布。主 Agent 通过状态插�
 - 文本搜索只用于入口候选、注解、配置、Mapper XML、SQL 和 Entity，不能生成调用边。
 - Feign/MQ/RPC/Event 使用有两端证据的逻辑边界，明确区别于 Java 边。
 - 没有当前命令需要的 Code Graph 能力或索引时失败关闭。
+- Code Graph工具必须显式支持limit并明确返回resultCount/truncated；`maxFiles`或`and N more`摘要不能判为PASS。
+- 每条Java边校验调用点receiver类型、目标声明类型和可赋值集合，拒绝同名方法误连。
 - 状态插件只管理运行状态并计算源码字节指纹，不解析 Java 语义、不生成调用边，也不实现第二套代码图。
 - Code Graph 索引不会被工具包自动初始化、刷新或升级。
 - 静态functional WebFlux、JMS、Quartz、GraphQL root和gRPC unary有严格verified profile；动态router/destination/runtime wiring/streaming、Kafka Streams仍PARTIAL。

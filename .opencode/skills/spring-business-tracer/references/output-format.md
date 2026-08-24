@@ -24,7 +24,7 @@ docs/spring-business/
 > 入口ID：...
 > Service：...
 > 触发器：...
-> Run/配置/源码/索引/工具包指纹：...
+> Run/config/source/index/toolkit/resolvedConfig/adapterRegistry指纹：...
 > 验证：validator + validationHash
 
 ## 业务摘要
@@ -52,7 +52,7 @@ C -> D                         # CODEGRAPH_JAVA_EDGE
 
 Manifest 是文档导航和审计清单；可查询调用图位于同一不可变快照的graph目录。至少包含：
 
-- schemaVersion、runId、config/source/index/toolkit 指纹和graphHash；
+- schemaVersion、runId、config/source/index/toolkit/resolvedConfig/adapterRegistry 六指纹和graphHash；
 - 服务、入口、表、逻辑边界文档路径及内容哈希；
 - 每个入口的状态、validationHash 和未确认项数量；
 - 启用的入口 adapters 及发现数量；

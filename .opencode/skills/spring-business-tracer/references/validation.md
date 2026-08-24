@@ -11,12 +11,12 @@ Code Graph 返回的 Mapper→XML 映射或框架事件分派要按特殊边记�
 逐项检查：
 
 - 入口符号唯一且指纹一致；
-- 每条 Java 边有实际工具、参数、caller/callee身份、调用点；
+- 每条Java边有实际工具、参数、caller/callee身份、调用点，以及调用点receiver静态类型、目标declaring type和Code Graph确认的可赋值/实现集合；目标不在集合时拒绝同名误边；
 - 接口实现来自 Code Graph；
 - 从入口到每个持久化或边界终点连通；
 - 表、CRUD、动态 SQL 和 JPA save 不确定性正确；
 - 没有文本搜索创建的 Java 边；
-- 所有查询显式limit且truncated=false，返回数未触顶；
+- 所有查询满足显式limit/resultCount/truncated/completionStatus/summaryOmittedCount契约且未触顶、未摘要省略；
 - 事实、推断和未确认项分离。
 
 常用错误码：
@@ -52,7 +52,7 @@ BOUNDARY_AMBIGUOUS
 
 ## 增量 validator
 
-独立核对同版V2 COMPLETE baseline、当前全量入口重发现、changedServices、changedConfigKeys、serviceClosure/configDependencyIds及闭合集合。
+独立核对同版V2 COMPLETE baseline、当前全量入口重发现、changedServices、changedSharedModules、changedConfigKeys、serviceClosure/sharedModuleClosure/configDependencyIds及闭合集合。
 
 ## Config auditor
 

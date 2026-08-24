@@ -27,10 +27,11 @@ permission:
     spring-business-tracer: allow
   codegraph_*: allow
   spring_config_resolve: allow
+  spring_discovery_commit: allow
 ---
 
 加载 `spring-business-tracer`，重点读取 `references/entrypoints.md` 和 `references/codegraph-contract.md`。
 
-只处理主 Agent 分配的 service root 和 adapter 集合。注解/接口搜索只能产生候选；每个入口必须用 Code Graph 确认 symbol ID、完整签名和源码位置。返回稳定排序的结构化入口清单、每个 adapter 的发现数量、未确认候选、`excludedCandidates` 和查询记录。Feign route 等出站客户端不是入口，必须给出排除理由。
+只处理主Agent分配的service root和adapter集合。注解/接口搜索只能产生候选；每个入口必须用Code Graph确认symbol ID、签名和位置，并证明宿主在所选context中是有效Spring Bean。被注释、条件不成立、未注册或宿主非Bean的候选必须排除。只提交符合`entry-inventory.schema.json`的JSON；`totalEntries/adapters`必须与entries一致。
 
-不要展开完整业务链，不写文件，不调用 Subagent，不调用状态工具，不修改源码。无法确认时返回明确错误码，不猜测。
+使用主Agent给出的租约直接调用`spring_discovery_commit`；失败提交RETRYABLE_FAILED/FAILED。不要展开完整业务链，不写文件，不调用Subagent或其它状态工具。工具缺少显式limit/resultCount/truncated或响应有摘要省略时必须失败，不猜测。

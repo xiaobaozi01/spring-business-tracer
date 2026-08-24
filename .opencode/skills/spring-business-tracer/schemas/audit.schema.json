@@ -17,12 +17,14 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["tool", "args", "resultCount", "truncated"],
+        "required": ["tool", "args", "resultCount", "truncated", "completionStatus", "summaryOmittedCount"],
         "properties": {
           "tool": {"type": "string", "pattern": "^codegraph_[a-z][a-z0-9_]*$"},
           "args": {"type": "object", "required": ["limit"], "properties": {"limit": {"type": "integer", "minimum": 2, "maximum": 1000}}},
           "resultCount": {"type": "integer", "minimum": 0},
-          "truncated": {"const": false}
+          "truncated": {"const": false},
+          "completionStatus": {"const": "EXPLICIT_COMPLETE"},
+          "summaryOmittedCount": {"const": 0}
         }
       }
     },
@@ -31,6 +33,7 @@
     "baseManifestHash": {"type": "string"},
     "baseTopologyRootHash": {"type": "string"},
     "changedServices": {"type": "array", "items": {"type": "string"}},
+    "changedSharedModules": {"type": "array", "items": {"type": "string"}},
     "changedConfigKeys": {"type": "array", "items": {"type": "string"}},
     "resolutionContextHash": {"type": "string"},
     "contextIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
@@ -47,7 +50,7 @@
   "allOf": [
     {"if": {"properties": {"kind": {"const": "COVERAGE"}}}, "then": {"properties": {"validator": {"const": "spring-coverage-auditor"}}}},
     {"if": {"properties": {"kind": {"const": "BOUNDARY"}}}, "then": {"required": ["verifiedBoundaryIds"], "properties": {"validator": {"const": "spring-boundary-validator"}}}},
-    {"if": {"properties": {"kind": {"const": "INCREMENTAL"}}}, "then": {"required": ["baseRunId", "baseGraphHash", "baseManifestHash", "baseTopologyRootHash", "changedServices", "changedConfigKeys", "reusableEntryIds", "affectedEntryIds", "newEntryIds", "tombstonedEntryIds", "workQueueEntryIds"], "properties": {"validator": {"const": "spring-incremental-validator"}}}},
+    {"if": {"properties": {"kind": {"const": "INCREMENTAL"}}}, "then": {"required": ["baseRunId", "baseGraphHash", "baseManifestHash", "baseTopologyRootHash", "changedServices", "changedSharedModules", "changedConfigKeys", "reusableEntryIds", "affectedEntryIds", "newEntryIds", "tombstonedEntryIds", "workQueueEntryIds"], "properties": {"validator": {"const": "spring-incremental-validator"}}}},
     {"if": {"properties": {"kind": {"const": "CONFIG"}}}, "then": {"required": ["resolutionContextHash", "contextIds", "resolutionLog"], "properties": {"validator": {"const": "spring-config-auditor"}}}}
   ]
 }

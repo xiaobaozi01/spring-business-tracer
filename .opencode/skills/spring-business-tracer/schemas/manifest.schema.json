@@ -3,7 +3,7 @@
   "$id": "spring-business-tracer/manifest.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "toolkitVersion", "runId", "graphHash", "fingerprints", "contexts", "services", "entrypoints", "tables", "boundaries", "codeGraphTools", "graph", "tombstones", "graphDelta", "audits"],
+  "required": ["schemaVersion", "toolkitVersion", "runId", "graphHash", "fingerprints", "contexts", "services", "sharedModules", "entrypoints", "tables", "boundaries", "codeGraphTools", "graph", "tombstones", "graphDelta", "audits"],
   "properties": {
     "schemaVersion": {"const": "2.0"},
     "toolkitVersion": {"const": "2.0.0"},
@@ -12,6 +12,7 @@
     "fingerprints": {"$ref": "#/$defs/fingerprints"},
     "contexts": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "contextHash"]}},
     "services": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "root"]}},
+    "sharedModules": {"type": "array", "items": {"type": "object", "required": ["id", "root"]}},
     "entrypoints": {"type": "array", "items": {"type": "object", "required": ["id", "status"]}},
     "tables": {"type": "array", "items": {"type": "object", "required": ["name", "operations", "evidence"]}},
     "boundaries": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "key", "source", "target", "status", "deliverySemantics", "evidence"]}},

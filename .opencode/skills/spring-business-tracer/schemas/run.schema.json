@@ -18,6 +18,8 @@
     "indexHash": {"type": ["string", "null"]},
     "tombstones": {"type": "object", "required": ["entryIds", "nodeIds", "edgeIds"], "properties": {"entryIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "nodeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "edgeIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}}},
     "retryLimit": {"type": "integer", "minimum": 0, "maximum": 10},
+    "sharedModuleSnapshots": {"type": "object", "additionalProperties": {"type": "string"}},
+    "discovery": {"type": "object", "required": ["started", "units"], "properties": {"started": {"type": "boolean"}, "units": {"type": "object", "additionalProperties": {"$ref": "#/$defs/discoveryUnit"}}}},
     "units": {"type": "object", "additionalProperties": {"$ref": "#/$defs/unit"}},
     "audits": {
       "type": "object",
@@ -30,6 +32,7 @@
     }
   },
   "$defs": {
+    "discoveryUnit": {"type": "object", "required": ["serviceId", "status", "attempts"], "properties": {"serviceId": {"type": "string"}, "status": {"enum": ["PENDING", "LEASED", "COMPLETE", "RETRYABLE_FAILED", "FAILED"]}, "attempts": {"type": "integer", "minimum": 0}, "artifactHash": {"type": ["string", "null"]}, "entryCount": {"type": "integer", "minimum": 0}}},
     "unit": {
       "type": "object",
       "required": ["id", "service", "kind", "status", "attempts", "fingerprintToken"],

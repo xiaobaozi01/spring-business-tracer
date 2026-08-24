@@ -18,24 +18,25 @@
 
 1. Doctor步骤：检查工具、索引和全部指纹。
 2. 配置步骤：冻结analysisContexts，config auditor独立提交CONFIG报告。
-3. 发现步骤：服务归属、入口候选、Code Graph确认。
-3. `PLANNED`：覆盖审计通过，冻结 inventory。
-4. `TRACING`：按稳定 ID 排序领取隔离批次。
-5. `VALIDATING`：每个 traced 单元由独立 validator 复查。
-6. `PUBLISHING`：只发布 verified 单元到 staging。
-7. 审计步骤：Validator直接提交覆盖与逻辑边界认证报告。
-8. 建图并进入 `FINALIZING`，原子发布不可变快照与current指针。
-9. `COMPLETE/PARTIAL/PAUSED/FAILED/STALE`。
+3. 发现步骤：为每个可部署服务领取独立发现租约；worker直接提交结构化inventory，插件校验查询完整性、Bean有效性和计数并落盘。共享模块不作为入口服务。
+4. `PLANNED`：所有服务checkpoint为COMPLETE且覆盖审计通过后，插件确定性合并inventory；不得由主Agent复制自然语言表格。
+5. `TRACING`：按稳定 ID 排序领取隔离批次。
+6. `VALIDATING`：每个 traced 单元由独立 validator 复查。
+7. `PUBLISHING`：只发布 verified 单元到 staging。
+8. 审计步骤：Validator直接提交覆盖与逻辑边界认证报告。
+9. 建图并进入 `FINALIZING`，原子发布不可变快照与current指针。
+10. `COMPLETE/PARTIAL/PAUSED/FAILED/STALE`。
 
 ## 批次隔离
 
 - 一个入口是最小可提交单元；批次只是调度集合。
 - Worker 得到 entry ID、service root、profile、指纹和查询预算，不得到其他 worker 的推理。
 - 主 Agent 顺序提交状态，防止多个 worker 覆盖同一 manifest。
-- claim和close、RESUME、PARTIAL、COMPLETE校验源码四指纹、resolutionContextHash和adapterRegistryFingerprint。
+- claim和close、RESUME、PARTIAL、COMPLETE校验 config/source/index/toolkit/resolvedConfig/adapterRegistry 六类V2指纹。
 - commit 必须传回 claim 返回的单元 `fingerprintToken`。
 - TRACE、VALIDATE、PUBLISH是三个独立租约阶段；每批heartbeat并在所有单元提交后close。
 - 超过 retryLimit 为 `BLOCKED/FAILED`，不能无限循环。
+- 入口发现同样使用30~3600秒租约并逐服务checkpoint；中断后保留COMPLETE服务，只回收过期租约、重试缺失服务。
 
 ## 资源边界
 

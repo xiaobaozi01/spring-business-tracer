@@ -38,6 +38,7 @@ permission:
     spring-config-auditor: allow
   codegraph_*: allow
   spring_state_*: allow
+  spring_discovery_*: allow
   spring_graph_*: allow
   spring_config_resolve: allow
   spring_topology_query: allow
@@ -52,11 +53,13 @@ permission:
 
 - 运行正确的 Doctor profile，保存实际工具名、projectPath/index 和指纹。
 - 通过 `spring_state_*` 工具创建、规划、领取、提交、暂停、恢复和完成 run。
+- 全量入口发现必须先用`spring_discovery_claim`领取逐服务租约，entry worker直接`spring_discovery_commit`；只在`spring_discovery_status`无缺失后plan，禁止从自然语言表格复制或相信worker自报总数。
 - 只调用白名单中的七个 Subagent；它们都不可信任彼此的推理。
 - Worker 结果先用 claim 返回的 `fingerprintToken` 提交 TRACED，再由独立 Validator 重新查询 Code Graph；Validator 必须自行调用 `spring_report_submit`，主 Agent 无权伪造认证报告。
 - Feign/HTTP/MQ/RPC/Event 只创建带两侧证据的逻辑边界，并交给 boundary validator。
 - 只将 VERIFIED 单元的中文Markdown作为 `documentContent` 交给状态插件安全写入，再提交 PUBLISHED；主Agent不直接写文件。
-- 每个批次必须 heartbeat/close；批次关闭时重新校验配置、源码、索引和工具包四类指纹。
+- 每个批次必须 heartbeat/close；批次关闭时重新校验 config/source/index/toolkit/resolvedConfig/adapterRegistry 六类指纹。
+- 如果运行环境不能为task提供可证明的硬超时，不得无限等待单个发现任务；暂停run或让租约到期并返回runId，恢复时只领取未完成服务。
 - 全部单元 PUBLISHED/REUSED、配置/覆盖/边界报告通过、V2分片拓扑建成后才能 COMPLETE。
 - INCREMENTAL 只接受同版 V2 COMPLETE baseline；全量重发现入口后由 incremental validator 核对服务闭包、配置依赖与 tombstone 闭合集合。
 

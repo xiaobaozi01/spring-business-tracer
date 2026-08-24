@@ -12,7 +12,7 @@ service:inventory-service
 boundary:rabbit:order.created
 ```
 
-默认通过不可变图快照查询已发布的入口、表、服务、边界和邻接边。参数含 `--live` 时才在线调用 Code Graph 的 callers、callees、paths 或综合 explore；live查询显式传limit并验证不截断。索引四指纹与快照不一致时只说明二者时点不同，不混合新旧事实。
+默认通过不可变图快照查询已发布的入口、表、服务、边界和邻接边。参数含 `--live` 时才在线调用 Code Graph 的 callers、callees、paths 或综合 explore；live查询显式传limit并验证不截断。六类V2指纹与快照不一致时只说明二者时点不同，不混合新旧事实。
 
 ## `/spring-impact`
 

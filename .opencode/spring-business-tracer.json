@@ -3,6 +3,7 @@
   "language": "java",
   "workspace": {
     "services": [],
+    "sharedModules": [],
     "autoDiscoverSingleService": true,
     "requireAllServiceRootsIndexed": true
   },
@@ -122,10 +123,12 @@
   "batching": {
     "batchSize": 10,
     "maxConcurrentSubagents": 3,
+    "discoveryLeaseSeconds": 600,
     "leaseSeconds": 600,
     "heartbeatSeconds": 120,
     "retryLimit": 2,
     "checkpointAfterEachEntry": true,
+    "checkpointAfterEachServiceDiscovery": true,
     "requireClose": true,
     "operationJournalLimit": 2000
   },

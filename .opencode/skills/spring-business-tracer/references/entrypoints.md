@@ -2,7 +2,7 @@
 
 ## 原则
 
-入口适配器通过注解、接口或配置发现候选；候选方法必须由 Code Graph 唯一确认符号身份和源码位置。发现候选不是创建 Java 调用边。
+入口适配器通过注解、接口或配置发现候选；候选方法必须由Code Graph唯一确认符号身份和源码位置，并证明宿主是所选context中的有效Spring Bean。整类或Bean注解被注释、条件不成立、配置未注册、宿主非Bean时必须写入排除清单。发现候选不是创建Java调用边。
 
 ## 默认 adapters
 
@@ -28,11 +28,11 @@ V2按能力Profile验证：既有MVC、注解式WebFlux、Kafka/Rabbit listener�
 
 ## 清单字段
 
-每个入口保存：
+每个服务的清单作为独立checkpoint保存；插件从`entries`重算`totalEntries`和各adapter count，不接受自然语言编号或自报总数。每个入口保存：
 
 ```text
 id, serviceId, adapter, visibility, trigger,
-symbolId, signature, file, line,
+symbolId, signature, file, line, beanActivation,
 candidateEvidence, codeGraphQuery, exclusions
 ```
 

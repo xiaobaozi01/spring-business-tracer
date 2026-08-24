@@ -27,7 +27,7 @@ Doctor 用当前项目中一个已知 Java 方法执行最小、有限查询：
 3. 返回文件与行号或等价范围；
 4. 返回/接受当前 service root 或 `projectPath`，确认不是其他项目索引；
 5. impact profile 再执行一个 caller/blast-radius 探针。
-6. query/callees/callers显式传 `limit=maxBranches+1`，确认 `truncated=false` 且结果数未触顶。
+6. query/callees/callers显式传 `limit=maxBranches+1`，工具响应必须明确提供`resultCount`、`truncated=false`、`completionStatus=EXPLICIT_COMPLETE`、`summaryOmittedCount=0`且结果数未触顶。只有`maxFiles`参数不满足契约。
 
 探针不得触发自动初始化、自动重建或升级索引。索引未初始化时给出用户可执行的建议，但不自行执行。
 
@@ -52,8 +52,9 @@ Doctor 用当前项目中一个已知 Java 方法执行最小、有限查询：
 - 查询结果没有源码位置；
 - index/projectPath 与配置 service root 不匹配；
 - impact 没有 caller/blast-radius反向边；
-- 无法证明 config/source/index/toolkit 四指纹一致。
+- 无法证明 config/source/index/toolkit/resolvedConfig/adapterRegistry 六指纹一致。
 - 查询缺少显式limit、truncated=true或结果数触顶。
+- 工具schema没有显式limit/resultCount/truncated，或响应出现`... and N more`、`等N项`等摘要省略；不得由Agent自行猜为完整。
 
 ## 禁止降级
 
@@ -74,7 +75,7 @@ Profile：trace | scan | cross-service | impact | resume
 Code Graph实际工具：...
 能力：method / callee / caller / location / implementation / index / freshness
 最小探针：工具、参数摘要、命中符号与位置
-指纹：config / source / index / toolkit
+指纹：config / source / index / toolkit / resolvedConfig / adapterRegistry
 诊断：...
 下一步：...
 ```

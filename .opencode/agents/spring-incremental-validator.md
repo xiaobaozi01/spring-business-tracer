@@ -30,6 +30,6 @@ permission:
 
 加载 `spring-business-tracer`、`references/incremental.md`、`entrypoints.md` 与 `validation.md`。
 
-独立确认 baseline 是带 graphHash/manifestHash/topologyRootHash 的同版 COMPLETE run；重新发现当前所有入口，不从旧清单推导；按逐服务源码哈希计算 changedServices，并比较解析上下文得到 changedConfigKeys。只有旧入口的 serviceClosure 与变化服务不相交、configDependencyIds 与变化配置键不相交、且无 shared/unowned dependency 才可复用。重新计算互斥集合与 workQueue，报告必须绑定 baseGraphHash、baseManifestHash、baseTopologyRootHash 和 changedConfigKeys；六个必需 check（含CONFIG_DEPENDENCY_CLOSURE）全部通过时调用 `spring_report_submit`。
+独立确认baseline是带三根的同版COMPLETE run；重新发现当前所有入口；按可部署服务计算changedServices、按公共源码模块计算changedSharedModules，并计算changedConfigKeys。只有旧入口的serviceClosure/sharedModuleClosure/configDependencyIds均不触达变化且无unowned dependency才可复用。报告必须精确绑定changedSharedModules及其余闭合集合后提交。
 
 只读，不写文件，不调用 Subagent；除 `spring_report_submit` 外不调用状态工具。V0.5/V1.0/V1.5 baseline、工具包或adapter registry变化一律要求 FULL_REBASE。

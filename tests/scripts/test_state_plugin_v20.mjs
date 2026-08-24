@@ -7,13 +7,13 @@ import SpringBusinessStatePlugin from "../../.opencode/plugins/spring-business-s
 import { resolveAnalysisContexts } from "../../.opencode/plugins/spring-business/config-resolver.js";
 import { createTopology, queryTopologyBundle, verifyTopologyBundle, writeTopologyBundle, __test as graphTest } from "../../.opencode/plugins/spring-business/graph-v2.js";
 
-const { assertSafeConfigAgent, buildGraphSnapshot, claimBatch, closeBatch, commitUnit, controlRun, diffGraphSnapshots, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverRun, seedIncrementalRun, statusRun, submitReport } = SpringBusinessStatePlugin.__test;
+const { assertConfigurationSemantics, assertSafeConfigAgent, buildGraphSnapshot, claimBatch, claimDiscovery, closeBatch, commitDiscovery, commitUnit, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverExpiredDiscoveryLeases, recoverRun, seedIncrementalRun, statusRun, submitReport } = SpringBusinessStatePlugin.__test;
 const pluginHooks = await SpringBusinessStatePlugin();
 assert.deepEqual(Object.keys(pluginHooks.tool).sort(), [
-  "spring_config_resolve", "spring_graph_build", "spring_graph_diff", "spring_graph_query", "spring_migrate_config", "spring_report_submit",
+  "spring_config_resolve", "spring_discovery_claim", "spring_discovery_commit", "spring_discovery_status", "spring_graph_build", "spring_graph_diff", "spring_graph_query", "spring_migrate_config", "spring_report_submit",
   "spring_state_claim", "spring_state_close_batch", "spring_state_commit", "spring_state_control", "spring_state_fingerprint", "spring_state_heartbeat",
   "spring_state_init", "spring_state_plan", "spring_state_recover", "spring_state_seed", "spring_state_status", "spring_topology_query",
-].sort(), "V2插件必须完整暴露18个状态、配置和图工具");
+].sort(), "V2插件必须完整暴露21个状态、配置、发现和图工具");
 let serial = 0;
 const op = (label) => `${label}-${String(++serial).padStart(8, "0")}`;
 const rejects = (fn, fragment) => assert.rejects(fn, (error) => String(error.message).includes(fragment));
@@ -83,13 +83,33 @@ const root = await mkdtemp(join(tmpdir(), "spring-state-v20-"));
 const fp = {
   configHash: "cfg-v20", sourceSnapshot: "src-v1", indexFingerprint: "cg-v1", toolkitFingerprint: "kit-v20",
   resolutionContextHash: resolution.resolutionContextHash, adapterRegistryFingerprint: "adapter-v20", contextIds: ["prod-cn"], resolutionSummary: resolution,
-  serviceSnapshots: { order: "order-v1" }, serviceRoots: { order: "modules/order-service" }, indexMetadata: { order: { projectPath: "order", version: "1.5.0", index: { builtWithVersion: "1.5.0", currentExtractionVersion: 24 }, languages: ["java"] } }, queryLimit: 101,
+  serviceSnapshots: { order: "order-v1" }, serviceRoots: { order: "modules/order-service" }, sharedModuleSnapshots: {}, sharedModuleRoots: {}, indexMetadata: { order: { projectPath: "order", version: "1.5.0", index: { builtWithVersion: "1.5.0", currentExtractionVersion: 24 }, languages: ["java"] } }, queryLimit: 101,
 };
+assert.doesNotThrow(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 } }));
+assert.throws(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 100 } }), /CONFIG_QUERY_LIMIT_MISMATCH/);
+const expiredDiscovery = { retryLimit: 2, discovery: { units: { order: { serviceId: "order", status: "LEASED", attempts: 1, leaseUntil: "2000-01-01T00:00:00.000Z", leaseOwner: "worker", leaseToken: "token" } } } };
+assert.equal(recoverExpiredDiscoveryLeases(expiredDiscovery), 1);
+assert.equal(expiredDiscovery.discovery.units.order.status, "RETRYABLE_FAILED");
 const reportFp = { config: fp.configHash, source: fp.sourceSnapshot, index: fp.indexFingerprint, toolkit: fp.toolkitFingerprint, resolvedConfig: fp.resolutionContextHash, adapterRegistry: fp.adapterRegistryFingerprint };
+const inventory = (runId, totalEntries = 1) => JSON.stringify({
+  schemaVersion: "2.0", runId, serviceId: "order", fingerprints: reportFp, totalEntries,
+  adapters: [{ name: "SPRING_MVC", enabled: true, count: 1 }], excludedCandidates: [],
+  entries: [{ id: "discovered-order-get", serviceId: "order", adapter: "SPRING_MVC", adapterDefinitionVersion: "2.0.0", contextIds: ["prod-cn"], conditions: [], visibility: "PUBLIC", trigger: "GET /orders", symbolId: "OrderController#get", signature: "get()", file: "OrderController.java", line: 10, codeGraphQuery: { limit: 101 }, beanActivation: { effective: true, evidence: [{ annotation: "RestController" }] } }],
+  queryLog: [{ tool: "codegraph_callees", args: { limit: 101 }, purpose: "入口身份", resultCount: 1, truncated: false, completionStatus: "EXPLICIT_COMPLETE", summaryOmittedCount: 0 }],
+});
 const initIdempotencyInput = { runId: "run-init-idempotent", operationId: op("init-idempotent"), ...fp };
 const initializedOnce = await initRun(root, initIdempotencyInput);
 assert.deepEqual(await initRun(root, initIdempotencyInput), initializedOnce, "run初始化重试必须精确幂等");
 await rejects(() => initRun(root, { ...initIdempotencyInput, retryLimit: 3 }), "operationId已用于不同请求");
+await initRun(root, { runId: "run-discovery", operationId: op("discovery-init"), ...fp });
+const discoveryClaim = await claimDiscovery(root, { runId: "run-discovery", workerId: "entry-worker-1", operationId: op("discovery-claim"), leaseSeconds: 600, ...fp });
+assert.equal(discoveryClaim.units.length, 1);
+await rejects(() => commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-bad-count"), status: "COMPLETE", inventoryJson: inventory("run-discovery", 62) }, "spring-entry-worker"), "totalEntries");
+const committedDiscovery = await commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-commit"), status: "COMPLETE", inventoryJson: inventory("run-discovery") }, "spring-entry-worker");
+assert.equal(committedDiscovery.entryCount, 1);
+assert.deepEqual((await discoveryStatus(root, "run-discovery")).remainingServices, []);
+await planRun(root, { runId: "run-discovery", operationId: op("discovery-plan"), ...fp });
+assert.deepEqual(Object.keys((await statusRun(root, "run-discovery")).units), ["discovered-order-get"]);
 const checks = {
   TRACE: ["ENTRY_IDENTITY", "JAVA_EDGE_REPLAY", "PERSISTENCE_EVIDENCE", "NO_TEXT_EDGE", "QUERY_COMPLETENESS"],
   COVERAGE: ["ENTRY_SET_EQUAL", "ADAPTER_COVERAGE", "EXCLUSIONS_REVIEWED"],
@@ -101,22 +121,22 @@ const agents = { TRACE: "spring-trace-validator", COVERAGE: "spring-coverage-aud
 function report(runId, kind, extra = {}, fingerprints = reportFp) {
   return JSON.stringify({ schemaVersion: "2.0", runId, kind, validator: agents[kind], decision: "ACCEPTED", fingerprints,
     checks: checks[kind].map((code) => ({ code, passed: true, evidence: [code] })),
-    ...(kind === "CONFIG" ? { resolutionContextHash: fingerprints.resolvedConfig, contextIds: ["prod-cn"], resolutionLog: [{ contextId: "prod-cn", status: "RESOLVED" }], queryLog: [] } : { queryLog: [{ tool: "codegraph_callees", args: { limit: 101 }, resultCount: 1, truncated: false }] }),
+    ...(kind === "CONFIG" ? { resolutionContextHash: fingerprints.resolvedConfig, contextIds: ["prod-cn"], resolutionLog: [{ contextId: "prod-cn", status: "RESOLVED" }], queryLog: [] } : { queryLog: [{ tool: "codegraph_callees", args: { limit: 101 }, resultCount: 1, truncated: false, completionStatus: "EXPLICIT_COMPLETE", summaryOmittedCount: 0 }] }),
     ...(kind === "BOUNDARY" ? { verifiedBoundaryIds: [] } : {}), ...extra });
 }
-function trace(runId, entryId, key = "billing.queue", fingerprints = reportFp) {
-  return JSON.stringify({ schemaVersion: "2.0", runId, entryId, status: "TRACED", fingerprints, contextIds: ["prod-cn"], configDependencyIds: [key], serviceClosure: ["order"], sharedDependency: false, unownedDependency: false, entrySymbol: `${entryId}:controller`,
-    javaEdges: [{ from: `${entryId}:controller`, to: `${entryId}:service`, tool: "codegraph_callees", query: { limit: 101 }, file: "Controller.java", line: 10 }], specialEdges: [], boundaries: [],
+function trace(runId, entryId, key = "billing.queue", fingerprints = reportFp, sharedModuleClosure = []) {
+  return JSON.stringify({ schemaVersion: "2.0", runId, entryId, status: "TRACED", fingerprints, contextIds: ["prod-cn"], configDependencyIds: [key], serviceClosure: ["order"], sharedModuleClosure, sharedDependency: sharedModuleClosure.length > 0, unownedDependency: false, entrySymbol: `${entryId}:controller`,
+    javaEdges: [{ from: `${entryId}:controller`, to: `${entryId}:service`, tool: "codegraph_callees", query: { limit: 101 }, file: "Controller.java", line: 10, receiverType: "com.acme.OrderService", targetDeclaringType: "com.acme.OrderService", receiverAssignableTypes: ["com.acme.OrderService"], receiverCompatibility: "VERIFIED", dispatch: "VIRTUAL" }], specialEdges: [], boundaries: [],
     persistence: [{ symbol: `${entryId}:service`, resource: "db:main:table:sales.orders", storeId: "main", resourceKind: "RELATIONAL_TABLE", operation: "READ", evidence: { file: "Repository.java", line: 20 } }],
     topologyFacts: [{ type: "DISPATCHES_TO", from: `entry:${entryId}`, to: `${entryId}:controller`, assurance: "VERIFIED", provenance: { file: "Controller.java", line: 1 } }], unresolvedFindings: [],
-    queryLog: [{ tool: "codegraph_callees", args: { limit: 101 }, purpose: "callees", resultCount: 1, truncated: false }] });
+    queryLog: [{ tool: "codegraph_callees", args: { limit: 101 }, purpose: "callees", resultCount: 1, truncated: false, completionStatus: "EXPLICIT_COMPLETE", summaryOmittedCount: 0 }] });
 }
 async function close(runId, claim, override = fp) {
   return closeBatch(root, { runId, batchId: claim.batchId, batchToken: claim.batchToken, operationId: op("close"), ...override });
 }
-async function publishRun(runId, fingerprints = fp, reportFingerprints = reportFp, traceKey = "billing.queue") {
+async function publishRun(runId, fingerprints = fp, reportFingerprints = reportFp, traceKey = "billing.queue", sharedModuleClosure = []) {
   const traceClaim = await claimBatch(root, { runId, workerId: "trace", operationId: op("claim"), ...fingerprints });
-  for (const unit of traceClaim.units) await commitUnit(root, { runId, entryId: unit.id, workerId: "trace", batchId: traceClaim.batchId, fingerprintToken: unit.fingerprintToken, status: "TRACED", traceResultJson: trace(runId, unit.id, traceKey, reportFingerprints), operationId: op("trace") });
+  for (const unit of traceClaim.units) await commitUnit(root, { runId, entryId: unit.id, workerId: "trace", batchId: traceClaim.batchId, fingerprintToken: unit.fingerprintToken, status: "TRACED", traceResultJson: trace(runId, unit.id, traceKey, reportFingerprints, sharedModuleClosure), operationId: op("trace") });
   await close(runId, traceClaim, fingerprints);
   const validationClaim = await claimBatch(root, { runId, workerId: "validator", operationId: op("claim"), ...fingerprints });
   const state = await statusRun(root, runId);
@@ -216,7 +236,7 @@ const incrementalFp = { ...fp, resolutionContextHash: incrementalResolution.reso
 const incrementalReportFp = { ...reportFp, resolvedConfig: incrementalFp.resolutionContextHash };
 await initRun(root, { runId: "run-incremental", mode: "INCREMENTAL", baseRunId: "run-main", ...incrementalFp });
 await planRun(root, { runId: "run-incremental", entriesJson: JSON.stringify([{ id: "order-http-get", service: "order", adapter: "SPRING_MVC", contextIds: ["prod-cn"] }]), operationId: op("plan-inc"), ...incrementalFp });
-const incrementalSets = { baseRunId: "run-main", baseGraphHash: baseline.graphHash, baseManifestHash: baseline.manifestHash, changedServices: [], changedConfigKeys: ["prod-cn:billing.queue"], reusableEntryIds: [], affectedEntryIds: ["order-http-get"], newEntryIds: [], tombstonedEntryIds: ["billing-jms", "kafka-a1", "kafka-a2", "kafka-b", "kafka-c"], workQueueEntryIds: ["order-http-get"] };
+const incrementalSets = { baseRunId: "run-main", baseGraphHash: baseline.graphHash, baseManifestHash: baseline.manifestHash, changedServices: [], changedSharedModules: [], changedConfigKeys: ["prod-cn:billing.queue"], reusableEntryIds: [], affectedEntryIds: ["order-http-get"], newEntryIds: [], tombstonedEntryIds: ["billing-jms", "kafka-a1", "kafka-a2", "kafka-b", "kafka-c"], workQueueEntryIds: ["order-http-get"] };
 const unbound = await submitReport(root, { runId: "run-incremental", kind: "INCREMENTAL", operationId: op("inc-report-bad"), reportJson: report("run-incremental", "INCREMENTAL", incrementalSets, incrementalReportFp) }, agents.INCREMENTAL);
 await rejects(() => seedIncrementalRun(root, { runId: "run-incremental", reportId: unbound.reportId, operationId: op("seed-bad"), ...incrementalFp }), "topologyRootHash");
 const bound = await submitReport(root, { runId: "run-incremental", kind: "INCREMENTAL", operationId: op("inc-report"), reportJson: report("run-incremental", "INCREMENTAL", { ...incrementalSets, baseTopologyRootHash: baseline.topologyRootHash }, incrementalReportFp) }, agents.INCREMENTAL);
@@ -247,6 +267,22 @@ assert.equal(boundedDiff.nodes.counts.removed, expectedRemovedNodes.length);
 assert.equal(boundedDiff.nodes.rows.length, 1);
 assert.equal(boundedDiff.nodes.truncated, true);
 
+const sharedBaseFp = { ...fp, sourceSnapshot: "src-shared-v1", sharedModuleSnapshots: { common: "common-v1" }, sharedModuleRoots: { common: "modules/common" } };
+const sharedBaseReportFp = { ...reportFp, source: sharedBaseFp.sourceSnapshot };
+await initRun(root, { runId: "run-shared-base", ...sharedBaseFp });
+await planRun(root, { runId: "run-shared-base", entriesJson: JSON.stringify([{ id: "shared-dependent", service: "order", adapter: "SPRING_MVC", contextIds: ["prod-cn"] }]), operationId: op("shared-base-plan"), ...sharedBaseFp });
+await publishRun("run-shared-base", sharedBaseFp, sharedBaseReportFp, "billing.queue", ["common"]);
+const sharedBaseline = await statusRun(root, "run-shared-base");
+const sharedCurrentFp = { ...sharedBaseFp, sourceSnapshot: "src-shared-v2", sharedModuleSnapshots: { common: "common-v2" } };
+const sharedCurrentReportFp = { ...reportFp, source: sharedCurrentFp.sourceSnapshot };
+await initRun(root, { runId: "run-shared-inc", mode: "INCREMENTAL", baseRunId: "run-shared-base", ...sharedCurrentFp });
+await planRun(root, { runId: "run-shared-inc", entriesJson: JSON.stringify([{ id: "shared-dependent", service: "order", adapter: "SPRING_MVC", contextIds: ["prod-cn"] }]), operationId: op("shared-inc-plan"), ...sharedCurrentFp });
+const sharedSets = { baseRunId: "run-shared-base", baseGraphHash: sharedBaseline.graphHash, baseManifestHash: sharedBaseline.manifestHash, baseTopologyRootHash: sharedBaseline.topologyRootHash, changedServices: [], changedSharedModules: ["common"], changedConfigKeys: [], reusableEntryIds: [], affectedEntryIds: ["shared-dependent"], newEntryIds: [], tombstonedEntryIds: [], workQueueEntryIds: ["shared-dependent"] };
+const sharedReport = await submitReport(root, { runId: "run-shared-inc", kind: "INCREMENTAL", operationId: op("shared-inc-report"), reportJson: report("run-shared-inc", "INCREMENTAL", sharedSets, sharedCurrentReportFp) }, agents.INCREMENTAL);
+const sharedSeed = await seedIncrementalRun(root, { runId: "run-shared-inc", reportId: sharedReport.reportId, operationId: op("shared-seed"), ...sharedCurrentFp });
+assert.deepEqual(sharedSeed.changedSharedModules, ["common"]);
+assert.deepEqual(sharedSeed.affectedEntryIds, ["shared-dependent"]);
+
 await initRun(root, { runId: "run-unresolved-base", ...fp });
 await planRun(root, { runId: "run-unresolved-base", entriesJson: JSON.stringify([{ id: "external-dependent", service: "order", adapter: "SPRING_MVC", contextIds: ["prod-cn"] }]), operationId: op("plan-unresolved"), ...fp });
 await publishRun("run-unresolved-base", fp, reportFp, "dynamic.destination");
@@ -255,7 +291,7 @@ await initRun(root, { runId: "run-unresolved-inc", mode: "INCREMENTAL", baseRunI
 await planRun(root, { runId: "run-unresolved-inc", entriesJson: JSON.stringify([{ id: "external-dependent", service: "order", adapter: "SPRING_MVC", contextIds: ["prod-cn"] }]), operationId: op("plan-unresolved-inc"), ...fp });
 const unsafeReuse = {
   baseRunId: "run-unresolved-base", baseGraphHash: unresolvedBase.graphHash, baseManifestHash: unresolvedBase.manifestHash, baseTopologyRootHash: unresolvedBase.topologyRootHash,
-  changedServices: [], changedConfigKeys: [], reusableEntryIds: ["external-dependent"], affectedEntryIds: [], newEntryIds: [], tombstonedEntryIds: [], workQueueEntryIds: [],
+  changedServices: [], changedSharedModules: [], changedConfigKeys: [], reusableEntryIds: ["external-dependent"], affectedEntryIds: [], newEntryIds: [], tombstonedEntryIds: [], workQueueEntryIds: [],
 };
 const unsafeReuseReport = await submitReport(root, { runId: "run-unresolved-inc", kind: "INCREMENTAL", operationId: op("unresolved-report"), reportJson: report("run-unresolved-inc", "INCREMENTAL", unsafeReuse) }, agents.INCREMENTAL);
 await rejects(() => seedIncrementalRun(root, { runId: "run-unresolved-inc", reportId: unsafeReuseReport.reportId, operationId: op("unresolved-seed"), ...fp }), "保守失效集合不一致");
@@ -383,6 +419,11 @@ await rejects(() => evidenceCommit(fakeLog), "Code Graph");
 const fakeJava = JSON.parse(trace("run-codegraph-evidence", "evidence-entry"));
 fakeJava.javaEdges[0].tool = "grep";
 await rejects(() => evidenceCommit(fakeJava), "Code Graph");
+const incompatibleReceiver = JSON.parse(trace("run-codegraph-evidence", "evidence-entry"));
+incompatibleReceiver.javaEdges[0].receiverType = "java.util.List";
+incompatibleReceiver.javaEdges[0].targetDeclaringType = "com.acme.OmsCartItemController";
+incompatibleReceiver.javaEdges[0].receiverAssignableTypes = ["java.util.List", "java.util.Collection"];
+await rejects(() => evidenceCommit(incompatibleReceiver), "receiverType");
 const fakeSpecial = JSON.parse(trace("run-codegraph-evidence", "evidence-entry"));
 fakeSpecial.specialEdges = [{ from: "a", to: "b", kind: "FRAMEWORK", tool: "grep", query: { limit: 101 } }];
 await rejects(() => evidenceCommit(fakeSpecial), "Code Graph");
@@ -453,4 +494,4 @@ await link(externalSentinel, hardlinkTarget);
 await writeTopologyBundle(hardlinkWriteRoot, { contextIds: ["prod-cn"], units: {} }, [{ id: "hardlink-write", type: "SYMBOL", entryMembership: [], services: [] }], []);
 assert.equal(await readFile(externalSentinel, "utf8"), "outside-must-remain-unchanged");
 assert.equal((await queryTopologyBundle(hardlinkWriteRoot, { query: "node", key: "hardlink-write", limit: 1 })).rows[0].id, "hardlink-write");
-console.log("PASS: V2.0的18工具、配置/脱敏、Code Graph证据、状态全生命周期、provenance、增量/tombstone、有界diff、安全I/O与V1.5迁移动态测试");
+console.log("PASS: V2.0的21工具、发现checkpoint、配置/脱敏、receiver证据、状态全生命周期、provenance、增量/tombstone、有界diff、安全I/O与V1.5迁移动态测试");

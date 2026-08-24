@@ -15,7 +15,7 @@ metadata:
 - 仅支持 Java；不实现 Java parser、LSP 调用图或第二套代码图。
 - Java 符号、caller/callee、接口实现和跨文件 Java 边只能来自用户已安装并已完成索引的 Code Graph。
 - grep/glob/read 只发现入口候选和读取注解、配置、XML、SQL、Entity、路由等非 Java 边证据。
-- 每次 query/callees/callers 显式传 `limit=maxBranches+1`，记录 `resultCount`。缺少 limit、返回 truncated、`resultCount>=limit` 或索引不完整，一律 PARTIAL。
+- `codeGraph.queryLimit` 必须严格等于 `analysis.maxBranches+1`；查询要显式传该 `limit`，且工具明确返回 `resultCount/truncated/completionStatus/summaryOmittedCount`。`maxFiles` 不能替代 `limit`；出现“and N more”等摘要省略一律 FAIL/PARTIAL。
 - 跨进程关系是 `LOGICAL_BOUNDARY`，必须有发送端、接收端和唯一规范 key 的双侧证据；不能任选目标。
 - Validator/Auditor 必须自行调用 `spring_report_submit`；主 Agent 无权提交认证报告。
 - 正式完成必须基于实际工件字节、实际文档字节和确定性图快照，而不是调用者声明的哈希。
@@ -30,13 +30,13 @@ metadata:
 
 ## 多服务拓扑
 
-每个服务配置 `id/root/codeGraphProjectPath/packages/aliases`。服务间源码都存在时，先用边界 key 定位接收端，再从接收入口继续 Code Graph 追踪。共享库或无法归属的依赖设置 `sharedDependency/unownedDependency`，禁止增量复用。
+可部署服务配置在 `workspace.services`，公共源码模块配置在 `workspace.sharedModules`，不能伪装成服务。服务间源码都存在时，先用边界 key 定位接收端，再从接收入口继续 Code Graph 追踪。trace分别记录`serviceClosure/sharedModuleClosure`；无法归属依赖仍禁止增量复用。
 
 详见 [跨服务](references/cross-service.md)、[持久化](references/persistence.md)、[配置](references/configuration.md) 和 [配置上下文](references/config-resolution.md)。
 
 ## 全量工作流
 
-`/spring-scan`：Doctor → 解析上下文/CONFIG审计 → 全服务入口重发现 → 覆盖审计 → plan → 分批 TRACE/VALIDATE/PUBLISH → 边界/覆盖审计 → V2拓扑快照 → COMPLETE。
+`/spring-scan`：Doctor → 解析上下文/CONFIG审计 → 按服务领取入口发现租约并逐服务checkpoint → 覆盖审计 → 从checkpoint确定性plan → 分批 TRACE/VALIDATE/PUBLISH → 边界/覆盖审计 → V2拓扑快照 → COMPLETE。中断后只重领缺失或租约过期的服务。
 
 每一阶段都重新领取租约。批次处理中定时 heartbeat；本批全部提交后 close，close 时校验配置、源码、Code Graph索引、工具包、解析上下文和adapter registry。Worker只产候选trace；Validator独立回放。发布只能读取VERIFIED报告绑定的trace，文档先写staging，COMPLETE后原子发布。
 
@@ -44,7 +44,7 @@ metadata:
 
 ## 增量工作流
 
-`/spring-update` 只接受V2 COMPLETE baseline。插件比较逐服务源码与解析配置键；只有 `serviceClosure` 不触达 changedServices、`configDependencyIds` 不触达 changedConfigKeys 且没有共享/未知依赖才可 REUSED。旧版baseline、adapter registry或索引语义变化均FULL_REBASE。
+`/spring-update` 只接受V2 COMPLETE baseline。插件比较逐服务源码、逐共享模块源码与解析配置键；只有 `serviceClosure` 不触达 changedServices、`sharedModuleClosure` 不触达 changedSharedModules、`configDependencyIds` 不触达 changedConfigKeys 且没有未归属依赖才可 REUSED。旧版baseline、adapter registry或索引语义变化均FULL_REBASE。
 
 详见 [增量分析](references/incremental.md)。
 

@@ -31,6 +31,6 @@ permission:
 
 加载 `spring-business-tracer`，读取 trace、persistence、cross-service 和输出 reference。
 
-严格按入口逐跳查询 Code Graph，返回符合 V2 trace-result schema 的结构化结果。所有 query/callees/callers 显式传 `limit=maxBranches+1`并记录resultCount；触顶或截断时返回 PARTIAL。所有 Java 边记录实际工具、参数、符号和调用点，并记录 `serviceClosure/contextIds/configDependencyIds/topologyFacts/unresolvedFindings`。框架和协议关系只写类型化候选事实及provenance，不能冒充Java边；跨进程关系仅返回 CANDIDATE，不强连目标。
+严格按入口逐跳查询Code Graph并满足完整性契约。每条Java边除工具、参数、符号和调用点外，还要从调用点源码与目标声明记录`receiverType/targetDeclaringType/receiverAssignableTypes/receiverCompatibility/dispatch`；目标类型不在可赋值集合时拒绝该边。分别记录`serviceClosure/sharedModuleClosure`。框架和协议关系只能写候选事实，不能冒充Java边。
 
 不要读取其他 Worker 推理，不写文件，不调用 Subagent/状态工具，不把结果标为 VERIFIED/PUBLISHED。证据不足使用 PARTIAL 与错误码。

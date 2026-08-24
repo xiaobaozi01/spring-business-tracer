@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "spring-business-tracer/trace-result.schema.json",
   "type": "object",
-  "required": ["schemaVersion", "runId", "entryId", "fingerprints", "contextIds", "configDependencyIds", "serviceClosure", "javaEdges", "boundaries", "persistence", "topologyFacts", "unresolvedFindings", "queryLog", "status"],
+  "required": ["schemaVersion", "runId", "entryId", "fingerprints", "contextIds", "configDependencyIds", "serviceClosure", "sharedModuleClosure", "javaEdges", "boundaries", "persistence", "topologyFacts", "unresolvedFindings", "queryLog", "status"],
   "properties": {
     "schemaVersion": {"const": "2.0"},
     "runId": {"type": "string", "minLength": 1},
@@ -10,15 +10,16 @@
     "status": {"enum": ["TRACED", "PARTIAL", "FAILED", "TEST_ONLY"]},
     "fingerprints": {"type": "object", "additionalProperties": false, "required": ["config", "source", "index", "toolkit", "resolvedConfig", "adapterRegistry"], "properties": {"config": {"type": "string", "minLength": 1}, "source": {"type": "string", "minLength": 1}, "index": {"type": "string", "minLength": 1}, "toolkit": {"type": "string", "minLength": 1}, "resolvedConfig": {"type": "string", "minLength": 1}, "adapterRegistry": {"type": "string", "minLength": 1}}},
     "serviceClosure": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true},
+    "sharedModuleClosure": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "contextIds": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true},
     "configDependencyIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "topologyFacts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "from", "to", "assurance", "provenance"], "properties": {"type": {"enum": ["EXPOSES", "DISPATCHES_TO", "INVOKES_HTTP", "PUBLISHES", "DELIVERS_TO", "CONSUMES", "INVOKES_RPC", "TRIGGERS"]}, "from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1}, "assurance": {"enum": ["VERIFIED", "CONDITIONAL", "POTENTIAL"]}, "provenance": {"type": "object"}}}},
     "unresolvedFindings": {"type": "array"},
     "specialEdges": {"type": "array", "items": {"type": "object", "required": ["from", "to", "kind", "tool", "query"], "properties": {"from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1}, "kind": {"type": "string", "minLength": 1}, "tool": {"$ref": "#/$defs/codeGraphTool"}, "query": {"$ref": "#/$defs/codeGraphArgs"}}}},
-    "javaEdges": {"type": "array", "items": {"type": "object", "required": ["from", "to", "tool", "query", "file", "line"], "properties": {"from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1}, "tool": {"$ref": "#/$defs/codeGraphTool"}, "query": {"$ref": "#/$defs/codeGraphArgs"}, "file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1}}}},
+    "javaEdges": {"type": "array", "items": {"type": "object", "required": ["from", "to", "tool", "query", "file", "line", "receiverType", "targetDeclaringType", "receiverAssignableTypes", "receiverCompatibility", "dispatch"], "properties": {"from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1}, "tool": {"$ref": "#/$defs/codeGraphTool"}, "query": {"$ref": "#/$defs/codeGraphArgs"}, "file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1}, "receiverType": {"type": "string", "minLength": 1}, "targetDeclaringType": {"type": "string", "minLength": 1}, "receiverAssignableTypes": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true}, "receiverCompatibility": {"const": "VERIFIED"}, "dispatch": {"enum": ["STATIC", "VIRTUAL", "INTERFACE", "SUPER", "CONSTRUCTOR"]}}}},
     "boundaries": {"type": "array", "items": {"$ref": "boundary-link.schema.json"}},
     "persistence": {"type": "array", "items": {"type": "object", "required": ["symbol", "resource", "storeId", "resourceKind", "operation", "evidence"], "properties": {"storeId": {"type": "string", "minLength": 1}, "resourceKind": {"const": "RELATIONAL_TABLE"}, "operation": {"enum": ["READ", "INSERT", "UPDATE", "DELETE", "UPSERT_OR_UPDATE", "UNKNOWN"]}}}},
-    "queryLog": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["tool", "args", "purpose", "resultCount", "truncated"], "properties": {"tool": {"$ref": "#/$defs/codeGraphTool"}, "args": {"$ref": "#/$defs/codeGraphArgs"}, "purpose": {"type": "string", "minLength": 1}, "resultCount": {"type": "integer", "minimum": 0}, "truncated": {"const": false}}}}
+    "queryLog": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["tool", "args", "purpose", "resultCount", "truncated", "completionStatus", "summaryOmittedCount"], "properties": {"tool": {"$ref": "#/$defs/codeGraphTool"}, "args": {"$ref": "#/$defs/codeGraphArgs"}, "purpose": {"type": "string", "minLength": 1}, "resultCount": {"type": "integer", "minimum": 0}, "truncated": {"const": false}, "completionStatus": {"const": "EXPLICIT_COMPLETE"}, "summaryOmittedCount": {"const": 0}}}}
   },
   "$defs": {
     "codeGraphTool": {"type": "string", "pattern": "^codegraph_[a-z][a-z0-9_]*$"},

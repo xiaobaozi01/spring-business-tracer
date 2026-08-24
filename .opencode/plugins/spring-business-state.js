@@ -55,6 +55,7 @@ const COMMIT_STATES = new Set([
   "FAILED",
 ]);
 const ACTIVE_UNIT_STATES = new Set(["LEASED"]);
+const DISCOVERY_STATES = new Set(["PENDING", "LEASED", "COMPLETE", "RETRYABLE_FAILED", "FAILED"]);
 const REPORT_SPECS = {
   TRACE: {
     agent: "spring-trace-validator",
@@ -259,28 +260,49 @@ async function collectToolkitFiles(root) {
   return [...new Set(files)].sort();
 }
 
+function assertConfigurationSemantics(config) {
+  const maxBranches = Number(config.analysis?.maxBranches);
+  const queryLimit = Number(config.codeGraph?.queryLimit);
+  if (!Number.isInteger(maxBranches) || maxBranches < 1 || maxBranches > 999) {
+    throw new Error("配置analysis.maxBranches必须为1到999的整数");
+  }
+  if (!Number.isInteger(queryLimit) || queryLimit !== maxBranches + 1) {
+    throw new Error(`CONFIG_QUERY_LIMIT_MISMATCH: codeGraph.queryLimit必须严格等于analysis.maxBranches+1（期望${maxBranches + 1}）`);
+  }
+}
+
 async function computeWorkspaceFingerprints(worktree, options = {}) {
   const root = resolve(worktree);
   const configPath = join(root, ".opencode/spring-business-tracer.json");
   const config = await readJson(configPath);
+  assertConfigurationSemantics(config);
   const configuredServices = config.workspace?.services?.length
     ? config.workspace.services
     : [{ id: "workspace", root: ".", codeGraphProjectPath: "." }];
+  const configuredSharedModules = config.workspace?.sharedModules ?? [];
   const services = [];
-  const serviceIds = new Set();
-  for (const service of configuredServices) {
-    if (typeof service.id !== "string" || !service.id || serviceIds.has(service.id)) throw new Error(`服务id缺失或重复：${service.id}`);
-    if (typeof service.root !== "string" || !service.root || service.root.includes("\0")) throw new Error(`服务${service.id}的root非法`);
-    serviceIds.add(service.id);
-    const serviceRoot = resolve(root, service.root);
-    if (serviceRoot !== root && !serviceRoot.startsWith(root + sep)) throw new Error("服务源码根越出工作区");
-    const serviceReal = await realpath(serviceRoot);
+  const sharedModules = [];
+  const workspaceIds = new Set();
+  const normalizeModule = async (module, kind) => {
+    const label = kind === "service" ? "服务" : "共享模块";
+    if (typeof module.id !== "string" || !module.id || workspaceIds.has(module.id)) throw new Error(`${label}id缺失或跨服务/共享模块重复：${module.id}`);
+    if (typeof module.root !== "string" || !module.root || module.root.includes("\0")) throw new Error(`${label}${module.id}的root非法`);
+    workspaceIds.add(module.id);
+    const moduleRoot = resolve(root, module.root);
+    if (moduleRoot !== root && !moduleRoot.startsWith(root + sep)) throw new Error(`${label}源码根越出工作区`);
+    const moduleReal = await realpath(moduleRoot);
     const rootReal = await realpath(root);
-    if (serviceReal !== rootReal && !serviceReal.startsWith(rootReal + sep)) throw new Error("服务源码根符号链接越出工作区");
-    const projectPath = resolve(root, service.codeGraphProjectPath ?? service.root);
+    if (moduleReal !== rootReal && !moduleReal.startsWith(rootReal + sep)) throw new Error(`${label}源码根符号链接越出工作区`);
+    const projectPath = resolve(root, module.codeGraphProjectPath ?? module.root);
     const projectReal = await realpath(projectPath);
     if (projectReal !== rootReal && !projectReal.startsWith(rootReal + sep)) throw new Error("Code Graph projectPath越出工作区");
-    services.push({ id: service.id, root: serviceReal, relativeRoot: service.root, projectPath: projectReal });
+    return { id: module.id, root: moduleReal, relativeRoot: module.root, projectPath: projectReal, kind };
+  };
+  for (const service of configuredServices) {
+    services.push(await normalizeModule(service, "service"));
+  }
+  for (const sharedModule of configuredSharedModules) {
+    sharedModules.push(await normalizeModule(sharedModule, "shared"));
   }
   const statusRunner = options.codeGraphStatus ?? defaultCodeGraphStatus;
   const versionRunner = options.codeGraphVersion ?? defaultCodeGraphVersion;
@@ -288,25 +310,33 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
   indexParts.push("codegraph-version", "\0", await versionRunner(root), "\0");
   const serviceSnapshots = Object.create(null);
   const serviceRoots = Object.create(null);
+  const sharedModuleSnapshots = Object.create(null);
+  const sharedModuleRoots = Object.create(null);
   const indexMetadata = Object.create(null);
   const allFiles = [];
-  for (const service of services) {
-    const files = await collectSourceFiles(service.root, service.root, []);
+  for (const module of [...services, ...sharedModules]) {
+    const files = await collectSourceFiles(module.root, module.root, []);
     const uniqueFiles = [...new Set(files)].sort();
     allFiles.push(...uniqueFiles);
-    serviceSnapshots[service.id] = await computeSourceSnapshot(service.root, uniqueFiles);
-    serviceRoots[service.id] = service.relativeRoot;
-    const status = await statusRunner(service.projectPath);
+    const snapshot = await computeSourceSnapshot(module.root, uniqueFiles);
+    if (module.kind === "service") {
+      serviceSnapshots[module.id] = snapshot;
+      serviceRoots[module.id] = module.relativeRoot;
+    } else {
+      sharedModuleSnapshots[module.id] = snapshot;
+      sharedModuleRoots[module.id] = module.relativeRoot;
+    }
+    const status = await statusRunner(module.projectPath);
     const normalizedStatus = typeof status === "string" ? { legacyText: status } : status;
-    indexMetadata[service.id] = normalizedStatus;
-    indexParts.push(service.id, "\0", canonicalJson(normalizedStatus), "\0");
+    const metadataKey = module.kind === "service" ? module.id : `shared:${module.id}`;
+    indexMetadata[metadataKey] = normalizedStatus;
+    indexParts.push(module.kind, "\0", module.id, "\0", canonicalJson(normalizedStatus), "\0");
   }
   const uniqueFiles = [...new Set(allFiles)].sort();
   const toolkitFiles = await collectToolkitFiles(root);
   const resolution = await resolveAnalysisContexts(root, config);
   const adapterRegistryFingerprint = sha256([canonicalJson(config.adapterRegistry ?? {})]);
-  const queryLimit = Number(config.codeGraph?.queryLimit ?? Number(config.analysis?.maxBranches ?? 100) + 1);
-  if (!Number.isInteger(queryLimit) || queryLimit < 2 || queryLimit > 1000) throw new Error("配置codeGraph.queryLimit必须为2到1000的整数");
+  const queryLimit = Number(config.codeGraph.queryLimit);
   return {
     configHash: sha256([canonicalJson(config)]),
     sourceSnapshot: await computeSourceSnapshot(root, uniqueFiles),
@@ -318,9 +348,12 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
     resolutionSummary: resolution,
     serviceSnapshots,
     serviceRoots,
+    sharedModuleSnapshots,
+    sharedModuleRoots,
     indexMetadata,
     sourceFileCount: uniqueFiles.length,
     serviceRootCount: services.length,
+    sharedModuleRootCount: sharedModules.length,
     queryLimit,
   };
 }
@@ -435,6 +468,9 @@ function updateCounters(run) {
     counts[unit.status] = (counts[unit.status] ?? 0) + 1;
   }
   run.counts = counts;
+  const discoveryCounts = {};
+  for (const unit of Object.values(discoveryUnits(run))) discoveryCounts[unit.status] = (discoveryCounts[unit.status] ?? 0) + 1;
+  run.discoveryCounts = discoveryCounts;
   run.updatedAt = nowIso();
   if (run.events.length > 2000) run.events = run.events.slice(-2000);
 }
@@ -537,26 +573,97 @@ function assertCompleteQueryLog(value, run, label) {
   for (const query of value) {
     const limit = Number(query?.args?.limit);
     const resultCount = Number(query?.resultCount);
-    if (!isCodeGraphTool(query?.tool) || !Number.isInteger(limit) || limit !== run.queryLimit || !Number.isInteger(resultCount) || resultCount < 0 || resultCount >= limit || query.truncated !== false) {
-      throw new Error(`${label}的每条Code Graph查询必须使用limit=${run.queryLimit}，记录resultCount<limit且truncated=false`);
+    if (!isCodeGraphTool(query?.tool) || !Number.isInteger(limit) || limit !== run.queryLimit || !Number.isInteger(resultCount) || resultCount < 0 || resultCount >= limit || query.truncated !== false || query.completionStatus !== "EXPLICIT_COMPLETE" || Number(query.summaryOmittedCount) !== 0) {
+      throw new Error(`${label}的每条Code Graph查询必须使用limit=${run.queryLimit}，显式记录resultCount<limit、truncated=false、completionStatus=EXPLICIT_COMPLETE且summaryOmittedCount=0`);
     }
+  }
+}
+
+function assertReceiverResolvedEdges(value, run) {
+  const queryTools = new Set(value.queryLog.map((query) => query.tool));
+  if (!Array.isArray(value.javaEdges) || value.javaEdges.some((edge) =>
+    typeof edge?.from !== "string" || !edge.from || typeof edge?.to !== "string" || !edge.to ||
+    !isCodeGraphTool(edge?.tool) || !queryTools.has(edge.tool) || Number(edge?.query?.limit) !== run.queryLimit ||
+    typeof edge?.file !== "string" || !edge.file || !Number.isInteger(edge?.line) || edge.line < 1 ||
+    typeof edge?.receiverType !== "string" || !edge.receiverType ||
+    typeof edge?.targetDeclaringType !== "string" || !edge.targetDeclaringType ||
+    !Array.isArray(edge?.receiverAssignableTypes) || edge.receiverAssignableTypes.length === 0 || new Set(edge.receiverAssignableTypes).size !== edge.receiverAssignableTypes.length || edge.receiverAssignableTypes.some((type) => typeof type !== "string" || !type) || !edge.receiverAssignableTypes.includes(edge.receiverType) || !edge.receiverAssignableTypes.includes(edge.targetDeclaringType) ||
+    edge?.receiverCompatibility !== "VERIFIED" ||
+    !new Set(["STATIC", "VIRTUAL", "INTERFACE", "SUPER", "CONSTRUCTOR"]).has(edge?.dispatch))) {
+    throw new Error("traceResult包含非法Java边：每条边必须绑定Code Graph查询、调用点，并验证receiverType与targetDeclaringType兼容");
   }
 }
 
 function assertTraceEdges(value, run) {
   const queryTools = new Set(value.queryLog.map((query) => query.tool));
-  if (!Array.isArray(value.javaEdges) || value.javaEdges.some((edge) =>
-    typeof edge?.from !== "string" || !edge.from || typeof edge?.to !== "string" || !edge.to ||
-    !isCodeGraphTool(edge?.tool) || !queryTools.has(edge.tool) || Number(edge?.query?.limit) !== run.queryLimit ||
-    typeof edge?.file !== "string" || !edge.file || !Number.isInteger(edge?.line) || edge.line < 1)) {
-    throw new Error("traceResult包含非法Java边：每条边必须绑定本次Code Graph查询、源码文件和正行号");
-  }
+  assertReceiverResolvedEdges(value, run);
   if (value.specialEdges !== undefined && (!Array.isArray(value.specialEdges) || value.specialEdges.some((edge) =>
     typeof edge?.from !== "string" || !edge.from || typeof edge?.to !== "string" || !edge.to ||
     typeof edge?.kind !== "string" || !edge.kind || !isCodeGraphTool(edge?.tool) || !queryTools.has(edge.tool) ||
     Number(edge?.query?.limit) !== run.queryLimit))) {
     throw new Error("traceResult包含非法特殊边：每条边必须绑定本次Code Graph查询");
   }
+}
+
+function discoveryUnits(run) {
+  return run.discovery?.units ?? {};
+}
+
+function recoverExpiredDiscoveryLeases(run, timestamp = Date.now()) {
+  let recovered = 0;
+  for (const unit of Object.values(discoveryUnits(run))) {
+    if (unit.status === "LEASED" && Date.parse(unit.leaseUntil) <= timestamp) {
+      unit.status = unit.attempts > run.retryLimit ? "FAILED" : "RETRYABLE_FAILED";
+      unit.leaseOwner = null;
+      unit.leaseUntil = null;
+      unit.leaseToken = null;
+      unit.lastError = unit.status === "FAILED" ? "DISCOVERY_RETRY_LIMIT_EXCEEDED" : "DISCOVERY_LEASE_EXPIRED";
+      recovered += 1;
+    }
+  }
+  return recovered;
+}
+
+function validateServiceInventory(run, serviceId, text) {
+  const inventory = parseStructuredJson(text, "inventoryJson");
+  if (inventory.schemaVersion !== SCHEMA_VERSION || inventory.runId !== run.runId || inventory.serviceId !== serviceId) {
+    throw new Error("入口清单版本、runId或serviceId不匹配");
+  }
+  assertFingerprintObject(inventory.fingerprints, run, "入口清单");
+  assertCompleteQueryLog(inventory.queryLog, run, "入口清单");
+  if (!Array.isArray(inventory.entries) || !Array.isArray(inventory.adapters) || !Array.isArray(inventory.excludedCandidates)) {
+    throw new Error("入口清单必须包含结构化entries/adapters/excludedCandidates数组");
+  }
+  if (inventory.totalEntries !== inventory.entries.length) throw new Error("入口清单totalEntries与entries实际长度不一致");
+  const entryIds = new Set();
+  const adapterCounts = new Map();
+  for (const entry of inventory.entries) {
+    if (!entry || typeof entry.id !== "string" || !entry.id || entryIds.has(entry.id)) throw new Error(`入口清单包含缺失或重复ID：${entry?.id}`);
+    if (entry.serviceId !== serviceId) throw new Error(`入口${entry.id}不属于当前发现服务${serviceId}`);
+    if (!ENTRY_ADAPTERS.has(entry.adapter)) throw new Error(`入口${entry.id} adapter不在白名单`);
+    if (!Array.isArray(entry.contextIds) || entry.contextIds.length === 0 || entry.contextIds.some((id) => !run.contextIds.includes(id))) throw new Error(`入口${entry.id} contextIds非法`);
+    if (!entry.beanActivation || entry.beanActivation.effective !== true || !Array.isArray(entry.beanActivation.evidence) || entry.beanActivation.evidence.length === 0) {
+      throw new Error(`入口${entry.id}未证明是当前上下文中的有效Spring Bean`);
+    }
+    if (entry.adapterDefinitionVersion !== TOOLKIT_VERSION || !new Set(["PUBLIC", "INTERNAL", "BACKGROUND"]).has(entry.visibility) || typeof entry.trigger !== "string" || Number(entry.codeGraphQuery?.limit) !== run.queryLimit) {
+      throw new Error(`入口${entry.id}的adapter版本、visibility、trigger或codeGraphQuery非法`);
+    }
+    if (typeof entry.symbolId !== "string" || !entry.symbolId || typeof entry.signature !== "string" || !entry.signature || typeof entry.file !== "string" || !entry.file || !Number.isInteger(entry.line) || entry.line < 1) {
+      throw new Error(`入口${entry.id}缺少结构化符号或源码位置`);
+    }
+    entryIds.add(entry.id);
+    adapterCounts.set(entry.adapter, (adapterCounts.get(entry.adapter) ?? 0) + 1);
+  }
+  const declared = new Map();
+  for (const row of inventory.adapters) {
+    if (!row || typeof row.name !== "string" || declared.has(row.name) || typeof row.enabled !== "boolean" || !Number.isInteger(row.count) || row.count < 0) throw new Error("入口清单adapters统计非法");
+    declared.set(row.name, row.count);
+  }
+  for (const [adapter, count] of adapterCounts) if (declared.get(adapter) !== count) throw new Error(`入口清单adapter ${adapter}计数与entries不一致`);
+  for (const [adapter, count] of declared) if ((adapterCounts.get(adapter) ?? 0) !== count) throw new Error(`入口清单adapter ${adapter}声明计数不一致`);
+  inventory.entries = [...inventory.entries].sort((a, b) => a.id.localeCompare(b.id));
+  inventory.adapters = [...inventory.adapters].sort((a, b) => a.name.localeCompare(b.name));
+  return inventory;
 }
 
 function parseStructuredJson(text, label, expected = "object") {
@@ -619,6 +726,9 @@ function validateTraceResult(run, unit, text) {
   }
   const knownServices = new Set(Object.keys(run.serviceSnapshots));
   if (value.serviceClosure.some((service) => !knownServices.has(service))) throw new Error("serviceClosure包含未知服务");
+  if (!Array.isArray(value.sharedModuleClosure)) throw new Error("traceResult缺少sharedModuleClosure");
+  const knownSharedModules = new Set(Object.keys(run.sharedModuleSnapshots ?? {}));
+  if (value.sharedModuleClosure.some((moduleId) => !knownSharedModules.has(moduleId))) throw new Error("sharedModuleClosure包含未知共享模块");
   if (!Array.isArray(value.boundaries) || value.boundaries.some((boundary) => !boundary?.id || !boundary?.kind || !boundary?.source || !new Set(["CANDIDATE", "VERIFIED", "UNRESOLVED", "REJECTED"]).has(boundary?.status))) {
     throw new Error("traceResult包含非法逻辑边界");
   }
@@ -691,6 +801,8 @@ async function initRun(worktree, input) {
       resolutionSummary: input.resolutionSummary ?? null,
       serviceSnapshots: input.serviceSnapshots ?? {},
       serviceRoots: input.serviceRoots ?? {},
+      sharedModuleSnapshots: input.sharedModuleSnapshots ?? {},
+      sharedModuleRoots: input.sharedModuleRoots ?? {},
       indexMetadata: input.indexMetadata ?? {},
       queryLimit,
       mode,
@@ -710,6 +822,21 @@ async function initRun(worktree, input) {
       counts: {},
       audits: { coverageHash: null, boundaryHash: null, configHash: null },
       units: {},
+      discovery: {
+        started: false,
+        units: Object.fromEntries(Object.keys(input.serviceSnapshots ?? {}).sort().map((serviceId) => [serviceId, {
+          serviceId,
+          status: "PENDING",
+          attempts: 0,
+          leaseOwner: null,
+          leaseUntil: null,
+          leaseToken: null,
+          artifactPath: null,
+          artifactHash: null,
+          entryCount: 0,
+          lastError: null,
+        }])),
+      },
       events: [{ at: createdAt, type: "RUN_CREATED" }],
     };
     // Match the exact JSON representation persisted in the operation journal so
@@ -720,6 +847,122 @@ async function initRun(worktree, input) {
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
+}
+
+async function claimDiscovery(worktree, input) {
+  assertIdentifier(input.workerId, WORKER_ID, "workerId");
+  return withRunLock(worktree, input.runId, async (paths) => {
+    const run = await readJson(paths.state);
+    assertCurrentRun(run);
+    const replay = operationReplay(run, input);
+    if (replay?.result) return replay.result;
+    if (!new Set(["CREATED", "PAUSED", "PAUSE_REQUESTED"]).has(run.phase)) throw new Error(`当前阶段不能领取入口发现：${run.phase}`);
+    await requireFreshFingerprints(run, input, paths, "DISCOVERY_CLAIM_FINGERPRINT_MISMATCH");
+    if (run.pauseRequested || run.phase === "PAUSED") throw new Error("运行已暂停，不能领取入口发现");
+    run.discovery.started = true;
+    const recovered = recoverExpiredDiscoveryLeases(run);
+    const requested = Number(input.limit ?? 1);
+    const limit = Math.max(1, Math.min(4, Number.isInteger(requested) ? requested : 1));
+    const requestedServices = input.serviceIds?.length ? new Set(input.serviceIds) : null;
+    if (requestedServices && [...requestedServices].some((id) => !Object.hasOwn(discoveryUnits(run), id))) throw new Error("serviceIds包含未知服务");
+    const leaseSeconds = Math.max(30, Math.min(3600, Number(input.leaseSeconds ?? 600)));
+    const leaseUntil = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const selected = Object.values(discoveryUnits(run))
+      .filter((unit) => new Set(["PENDING", "RETRYABLE_FAILED"]).has(unit.status) && (!requestedServices || requestedServices.has(unit.serviceId)))
+      .sort((a, b) => a.serviceId.localeCompare(b.serviceId))
+      .slice(0, limit);
+    for (const unit of selected) {
+      unit.status = "LEASED";
+      unit.attempts += 1;
+      unit.leaseOwner = input.workerId;
+      unit.leaseUntil = leaseUntil;
+      unit.leaseToken = sha256([run.runId, "\0discovery\0", unit.serviceId, "\0", String(unit.attempts), "\0", input.workerId, "\0", leaseUntil, "\0", randomUUID()]);
+      unit.lastError = null;
+    }
+    run.events.push({ at: nowIso(), type: "DISCOVERY_CLAIMED", services: selected.map((unit) => unit.serviceId), recovered });
+    updateCounters(run);
+    const resultValue = { runId: run.runId, phase: run.phase, recovered, units: selected, remaining: Object.values(discoveryUnits(run)).filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId).sort() };
+    recordOperation(run, input, replay?.digest, resultValue);
+    await atomicWriteJson(paths.state, run);
+    return resultValue;
+  });
+}
+
+async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
+  if (![PRIMARY_AGENT, "spring-entry-worker"].includes(agent)) throw new Error(`Agent ${agent}不能提交入口发现清单`);
+  assertIdentifier(input.workerId, WORKER_ID, "workerId");
+  if (!DISCOVERY_STATES.has(input.status) || !new Set(["COMPLETE", "RETRYABLE_FAILED", "FAILED"]).has(input.status)) throw new Error("入口发现提交状态非法");
+  return withRunLock(worktree, input.runId, async (paths) => {
+    const run = await readJson(paths.state);
+    assertCurrentRun(run);
+    const replay = operationReplay(run, input);
+    if (replay?.result) return replay.result;
+    if (run.phase !== "CREATED" && run.phase !== "PAUSE_REQUESTED") throw new Error(`当前阶段不能提交入口发现：${run.phase}`);
+    const unit = discoveryUnits(run)[input.serviceId];
+    if (!unit) throw new Error(`未知入口发现服务：${input.serviceId}`);
+    if (unit.status !== "LEASED" || unit.leaseOwner !== input.workerId || unit.leaseToken !== input.leaseToken) throw new Error("入口发现提交者或租约令牌不匹配");
+    if (Date.parse(unit.leaseUntil) <= Date.now()) {
+      recoverExpiredDiscoveryLeases(run);
+      updateCounters(run);
+      await atomicWriteJson(paths.state, run);
+      throw new Error("入口发现租约已过期，拒绝旧worker提交");
+    }
+    let inventory = null;
+    if (input.status === "COMPLETE") {
+      inventory = validateServiceInventory(run, input.serviceId, input.inventoryJson);
+      const relative = `discovery/inventory-${sha256([input.serviceId]).slice(7)}.json`;
+      await ensureSafeDirectoryChain(paths.directory, "discovery");
+      await atomicWriteJson(join(paths.directory, relative), inventory);
+      const bytes = await readRegularFile(join(paths.directory, relative), MAX_STRUCTURED_INPUT_BYTES);
+      unit.artifactPath = relative;
+      unit.artifactHash = sha256([bytes]);
+      unit.entryCount = inventory.entries.length;
+    }
+    unit.status = input.status === "RETRYABLE_FAILED" && unit.attempts > run.retryLimit ? "FAILED" : input.status;
+    unit.lastError = unit.status === "FAILED" ? (input.errorCode || "DISCOVERY_FAILED") : input.errorCode || null;
+    unit.leaseOwner = null;
+    unit.leaseUntil = null;
+    unit.leaseToken = null;
+    run.events.push({ at: nowIso(), type: "DISCOVERY_COMMITTED", serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount });
+    updateCounters(run);
+    const resultValue = { runId: run.runId, serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount, artifactHash: unit.artifactHash, remaining: Object.values(discoveryUnits(run)).filter((item) => item.status !== "COMPLETE").map((item) => item.serviceId).sort() };
+    recordOperation(run, input, replay?.digest, resultValue);
+    await atomicWriteJson(paths.state, run);
+    return resultValue;
+  });
+}
+
+async function readDiscoveredEntries(paths, run) {
+  const entries = [];
+  for (const unit of Object.values(discoveryUnits(run)).sort((a, b) => a.serviceId.localeCompare(b.serviceId))) {
+    if (unit.status !== "COMPLETE" || !unit.artifactPath || !unit.artifactHash) throw new Error(`服务${unit.serviceId}入口发现尚未完成`);
+    const bytes = await readRegularFile(join(paths.directory, unit.artifactPath), MAX_STRUCTURED_INPUT_BYTES);
+    if (sha256([bytes]) !== unit.artifactHash) throw new Error(`服务${unit.serviceId}入口清单工件哈希不匹配`);
+    const inventory = validateServiceInventory(run, unit.serviceId, bytes.toString("utf8"));
+    for (const entry of inventory.entries) entries.push({
+      id: entry.id,
+      service: entry.serviceId,
+      adapter: entry.adapter,
+      contextIds: entry.contextIds,
+      target: entry.trigger,
+    });
+  }
+  return entries.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+async function discoveryStatus(worktree, runId) {
+  const run = await statusRun(worktree, runId);
+  const units = Object.values(discoveryUnits(run)).sort((a, b) => a.serviceId.localeCompare(b.serviceId));
+  return {
+    runId,
+    phase: run.phase,
+    started: run.discovery?.started === true,
+    complete: units.length > 0 && units.every((unit) => unit.status === "COMPLETE"),
+    entryCount: units.reduce((sum, unit) => sum + (unit.entryCount ?? 0), 0),
+    completedServices: units.filter((unit) => unit.status === "COMPLETE").map((unit) => unit.serviceId),
+    remainingServices: units.filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId),
+    units,
+  };
 }
 
 async function planRun(worktree, input) {
@@ -738,7 +981,16 @@ async function planRun(worktree, input) {
     if (run.phase !== "CREATED") {
       throw new Error(`当前阶段不能规划：${run.phase}`);
     }
-    const entries = parseStructuredJson(input.entriesJson, "entriesJson", "array");
+    let entries;
+    if (run.discovery?.started) {
+      entries = await readDiscoveredEntries(paths, run);
+      if (input.entriesJson !== undefined) {
+        const supplied = parseStructuredJson(input.entriesJson, "entriesJson", "array").sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        if (canonicalJson(supplied) !== canonicalJson(entries)) throw new Error("entriesJson与已持久化的逐服务入口清单不一致");
+      }
+    } else {
+      entries = parseStructuredJson(input.entriesJson, "entriesJson", "array");
+    }
     if (!Array.isArray(entries) || entries.length === 0) throw new Error("entries必须是非空数组");
     const ids = new Set();
     const units = Object.create(null);
@@ -914,9 +1166,10 @@ async function commitUnit(worktree, input) {
       unit.artifactHash = artifact.hash;
       unit.traceArtifactPath = artifact.relative;
       unit.serviceClosure = [...new Set(trace.serviceClosure)].sort();
+      unit.sharedModuleClosure = [...new Set(trace.sharedModuleClosure)].sort();
       unit.configDependencyIds = [...new Set(trace.configDependencyIds)].sort();
       unit.contextIds = [...new Set(trace.contextIds)].sort();
-      unit.sharedDependency = trace.sharedDependency === true;
+      unit.sharedDependency = unit.sharedModuleClosure.length > 0 || trace.sharedDependency === true;
       unit.unownedDependency = trace.unownedDependency === true;
     } else if (input.status === "VERIFIED") {
       const report = run.reports[input.reportId];
@@ -1093,6 +1346,7 @@ async function recoverRun(worktree, input) {
     }
     await requireFreshFingerprints(run, input, paths, "RECOVER_FINGERPRINT_MISMATCH");
     const recovered = recoverExpiredLeases(run);
+    const recoveredDiscovery = recoverExpiredDiscoveryLeases(run);
     let closedBatches = 0;
     for (const batch of Object.values(run.batches)) {
       if (batch.status === "OPEN" && batch.unitIds.every((id) => run.units[id]?.status !== "LEASED")) {
@@ -1102,10 +1356,10 @@ async function recoverRun(worktree, input) {
         closedBatches += 1;
       }
     }
-    if (run.pauseRequested && !Object.values(run.units).some((unit) => unit.status === "LEASED")) run.phase = "PAUSED";
-    run.events.push({ at: nowIso(), type: "RUN_RECOVERED", recovered, closedBatches });
+    if (run.pauseRequested && !Object.values(run.units).some((unit) => unit.status === "LEASED") && !Object.values(discoveryUnits(run)).some((unit) => unit.status === "LEASED")) run.phase = "PAUSED";
+    run.events.push({ at: nowIso(), type: "RUN_RECOVERED", recovered, recoveredDiscovery, closedBatches });
     updateCounters(run);
-    const resultValue = { runId: run.runId, phase: run.phase, recovered, closedBatches };
+    const resultValue = { runId: run.runId, phase: run.phase, recovered, recoveredDiscovery, closedBatches };
     recordOperation(run, input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1140,6 +1394,8 @@ async function seedIncrementalRun(worktree, input) {
     }
     const serviceIds = new Set([...Object.keys(base.serviceSnapshots ?? {}), ...Object.keys(run.serviceSnapshots ?? {})]);
     const changedServices = [...serviceIds].filter((id) => base.serviceSnapshots?.[id] !== run.serviceSnapshots?.[id]).sort();
+    const sharedModuleIds = new Set([...Object.keys(base.sharedModuleSnapshots ?? {}), ...Object.keys(run.sharedModuleSnapshots ?? {})]);
+    const changedSharedModules = [...sharedModuleIds].filter((id) => base.sharedModuleSnapshots?.[id] !== run.sharedModuleSnapshots?.[id]).sort();
     const resolvedValues = (summary) => {
       const map = new Map();
       for (const context of summary?.contexts ?? []) {
@@ -1168,8 +1424,9 @@ async function seedIncrementalRun(worktree, input) {
     for (const unit of Object.values(run.units)) {
       const old = Object.hasOwn(base.units, unit.id) ? base.units[unit.id] : null;
       const safe = old && new Set(["PUBLISHED", "REUSED"]).has(old.status) && old.traceArtifactPath && old.documentHash &&
-        Array.isArray(old.serviceClosure) && old.serviceClosure.length > 0 && !old.sharedDependency && !old.unownedDependency &&
+        Array.isArray(old.serviceClosure) && old.serviceClosure.length > 0 && Array.isArray(old.sharedModuleClosure ?? []) && !old.unownedDependency &&
         old.serviceClosure.every((service) => !changedServices.includes(service)) && Array.isArray(old.configDependencyIds) &&
+        (old.sharedModuleClosure ?? []).every((moduleId) => !changedSharedModules.includes(moduleId)) &&
         old.configDependencyIds.every((key) => !unresolvedKeys.has(key) && !changedConfigKeys.includes(key) && !changedConfigKeys.some((changed) => changed.endsWith(`:${key}`)));
       if (safe) reusable.push(unit.id);
       else if (old) affectedExisting.push(unit.id);
@@ -1182,7 +1439,7 @@ async function seedIncrementalRun(worktree, input) {
     const workQueueEntryIds = [...affectedExisting, ...newEntryIds].sort();
     const payload = report.payload;
     if (payload.baseRunId !== base.runId || payload.baseGraphHash !== base.graphHash || payload.baseManifestHash !== base.manifestHash || payload.baseTopologyRootHash !== base.topologyRootHash) throw new Error("增量报告未绑定当前baseline、graphHash、manifestHash及topologyRootHash");
-    if (canonicalJson(payload.changedServices ?? []) !== canonicalJson(changedServices) || canonicalJson(payload.changedConfigKeys ?? []) !== canonicalJson(changedConfigKeys) || canonicalJson(payload.reusableEntryIds ?? []) !== canonicalJson(reusable) || canonicalJson(payload.affectedEntryIds ?? []) !== canonicalJson(affectedExisting) || canonicalJson(payload.newEntryIds ?? []) !== canonicalJson(newEntryIds) || canonicalJson(payload.workQueueEntryIds ?? []) !== canonicalJson(workQueueEntryIds) || canonicalJson(payload.tombstonedEntryIds ?? []) !== canonicalJson(tombstonedEntryIds)) {
+    if (canonicalJson(payload.changedServices ?? []) !== canonicalJson(changedServices) || canonicalJson(payload.changedSharedModules ?? []) !== canonicalJson(changedSharedModules) || canonicalJson(payload.changedConfigKeys ?? []) !== canonicalJson(changedConfigKeys) || canonicalJson(payload.reusableEntryIds ?? []) !== canonicalJson(reusable) || canonicalJson(payload.affectedEntryIds ?? []) !== canonicalJson(affectedExisting) || canonicalJson(payload.newEntryIds ?? []) !== canonicalJson(newEntryIds) || canonicalJson(payload.workQueueEntryIds ?? []) !== canonicalJson(workQueueEntryIds) || canonicalJson(payload.tombstonedEntryIds ?? []) !== canonicalJson(tombstonedEntryIds)) {
       throw new Error("增量报告与插件保守失效集合不一致");
     }
     for (const id of reusable) {
@@ -1209,6 +1466,7 @@ async function seedIncrementalRun(worktree, input) {
         traceArtifactPath: old.traceArtifactPath,
         documentRelativePath: newDocumentPath,
         serviceClosure: old.serviceClosure,
+        sharedModuleClosure: old.sharedModuleClosure ?? [],
         configDependencyIds: old.configDependencyIds,
         contextIds: old.contextIds,
         reusedFromRunId: base.runId,
@@ -1216,13 +1474,14 @@ async function seedIncrementalRun(worktree, input) {
       });
     }
     run.changedServices = changedServices;
+    run.changedSharedModules = changedSharedModules;
     run.changedConfigKeys = changedConfigKeys;
     run.tombstones.entryIds = tombstonedEntryIds;
     run.incrementalSets = { reusableEntryIds: reusable, affectedEntryIds: affectedExisting, newEntryIds, tombstonedEntryIds, workQueueEntryIds };
     run.incrementalReportId = input.reportId;
-    run.events.push({ at: nowIso(), type: "INCREMENTAL_SEEDED", baseRunId: base.runId, reusable: reusable.length, affectedExisting: affectedExisting.length, newEntries: newEntryIds.length, changedServices, changedConfigKeys });
+    run.events.push({ at: nowIso(), type: "INCREMENTAL_SEEDED", baseRunId: base.runId, reusable: reusable.length, affectedExisting: affectedExisting.length, newEntries: newEntryIds.length, changedServices, changedSharedModules, changedConfigKeys });
     updateCounters(run);
-    const resultValue = { runId: run.runId, baseRunId: base.runId, changedServices, changedConfigKeys, reusableEntryIds: reusable, affectedEntryIds: affectedExisting, newEntryIds, tombstonedEntryIds, workQueueEntryIds };
+    const resultValue = { runId: run.runId, baseRunId: base.runId, changedServices, changedSharedModules, changedConfigKeys, reusableEntryIds: reusable, affectedEntryIds: affectedExisting, newEntryIds, tombstonedEntryIds, workQueueEntryIds };
     recordOperation(run, input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1636,6 +1895,7 @@ async function writePublicationBundle(worktree, run) {
     fingerprints: { config: run.configHash, source: run.sourceSnapshot, index: run.indexFingerprint, toolkit: run.toolkitFingerprint, resolvedConfig: run.resolutionContextHash, adapterRegistry: run.adapterRegistryFingerprint },
     contexts: run.resolutionSummary?.contexts?.map((context) => ({ id: context.id, activeProfiles: context.activeProfiles, contextHash: context.contextHash, unresolvedCount: context.unresolved.length })) ?? [],
     services: Object.keys(run.serviceSnapshots).sort().map((id) => ({ id, root: run.serviceRoots?.[id] ?? id, sourceHash: run.serviceSnapshots[id] })),
+    sharedModules: Object.keys(run.sharedModuleSnapshots ?? {}).sort().map((id) => ({ id, root: run.sharedModuleRoots?.[id] ?? id, sourceHash: run.sharedModuleSnapshots[id] })),
     entrypoints: Object.values(run.units).sort((a, b) => a.id.localeCompare(b.id)).map((unit) => ({ id: unit.id, service: unit.service, kind: unit.kind, status: unit.status, documentHash: unit.documentHash })),
     tables: [...tableMap.values()].sort((a, b) => a.name.localeCompare(b.name)),
     boundaries: boundaries.sort((a, b) => a.id.localeCompare(b.id)),
@@ -1748,7 +2008,8 @@ async function controlRun(worktree, input) {
     if (action === "PAUSE") {
       run.resumePhase = run.phase;
       run.pauseRequested = true;
-      run.phase = Object.values(run.units).some((unit) => ACTIVE_UNIT_STATES.has(unit.status)) || Object.values(run.batches).some((batch) => batch.status === "OPEN") ? "PAUSE_REQUESTED" : "PAUSED";
+      const discoveryActive = Object.values(discoveryUnits(run)).some((unit) => unit.status === "LEASED");
+      run.phase = discoveryActive || Object.values(run.units).some((unit) => ACTIVE_UNIT_STATES.has(unit.status)) || Object.values(run.batches).some((batch) => batch.status === "OPEN") ? "PAUSE_REQUESTED" : "PAUSED";
     } else if (action === "RESUME") {
       if (!new Set(["PAUSED", "PAUSE_REQUESTED"]).has(run.phase)) {
         throw new Error(`只有暂停中的运行可以恢复：${run.phase}`);
@@ -1762,6 +2023,7 @@ async function controlRun(worktree, input) {
         throw new Error("运行指纹已变化，状态标记为STALE；请新建运行或显式重新规划");
       }
       recoverExpiredLeases(run);
+      recoverExpiredDiscoveryLeases(run);
       for (const batch of Object.values(run.batches)) {
         if (batch.status === "OPEN" && batch.unitIds.every((id) => run.units[id]?.status !== "LEASED")) {
           batch.status = "CLOSED";
@@ -1890,6 +2152,7 @@ async function migrateConfiguration(worktree, input = {}) {
       version: TOOLKIT_VERSION,
       workspace: {
         ...current.workspace,
+        sharedModules: [],
         services: (current.workspace?.services ?? []).map((service) => ({
           ...service,
           codeGraphProjectPath: service.codeGraphProjectPath ?? service.root,
@@ -1907,10 +2170,11 @@ async function migrateConfiguration(worktree, input = {}) {
       incremental: { enabled: true, strategy: "SERVICE_CLOSURE", requireFullEntryRediscovery: true, legacyBaselinePolicy: "FULL_REBASE" },
       publication: { stagingDirectory: "docs/spring-business/.staging", snapshotDirectory: "docs/spring-business/snapshots", currentPointer: "docs/spring-business/current.json", writeIndex: true, writeManifest: true },
       graph: { formatVersion: 2, sharded: true, shardPrefixLength: 2, diffEnabled: true, pathQueryMaxDepth: 20, pathQueryMaxResults: 100, recordTombstones: true, cursorBoundToSnapshot: true, queryWallClockMs: 2000, maxShardBytes: 8388608 },
-      batching: { ...current.batching, heartbeatSeconds: 120, requireClose: true, operationJournalLimit: 2000 },
+      batching: { ...current.batching, discoveryLeaseSeconds: current.batching.leaseSeconds, heartbeatSeconds: 120, checkpointAfterEachServiceDiscovery: true, requireClose: true, operationJournalLimit: 2000 },
       resume: { ...current.resume, requireToolkitFingerprint: true },
       verification: { ...current.verification, validators: [...new Set([...(current.verification.validators ?? []), "incremental", "config"])] },
     };
+    assertConfigurationSemantics(migrated);
     if (!Number.isInteger(migrated.codeGraph.queryLimit) || migrated.codeGraph.queryLimit < 2 || migrated.codeGraph.queryLimit > 1000 || migrated.incremental.strategy !== "SERVICE_CLOSURE" ||
         !migrated.verification.validators.includes("incremental") || !migrated.verification.validators.includes("config") || migrated.resume.requireToolkitFingerprint !== true || migrated.graph.formatVersion !== 2) {
       throw new Error("V2.0迁移结果未通过安全不变量校验");
@@ -1985,11 +2249,51 @@ const SpringBusinessStatePlugin = async () => ({
         return result(await initRun(context.worktree, { ...args, ...fingerprints }));
       },
     }),
-    spring_state_plan: tool({
-      description: "冻结入口清单并创建可恢复分析单元；entriesJson必须来自已验证入口清单",
+    spring_discovery_claim: tool({
+      description: "按服务领取入口发现租约；完成服务会独立checkpoint，过期后仅重试缺失服务",
       args: {
         runId: tool.schema.string(),
-        entriesJson: tool.schema.string(),
+        workerId: tool.schema.string(),
+        operationId: tool.schema.string(),
+        serviceIds: tool.schema.array(tool.schema.string()).optional(),
+        limit: tool.schema.number().int().min(1).max(4).optional(),
+        leaseSeconds: tool.schema.number().int().min(30).max(3600).optional(),
+      },
+      async execute(args, context) {
+        assertPrimary(context);
+        const fingerprints = await computeWorkspaceFingerprints(context.worktree);
+        return result(await claimDiscovery(context.worktree, { ...args, ...fingerprints }));
+      },
+    }),
+    spring_discovery_commit: tool({
+      description: "入口Worker原子提交单个服务的结构化清单；插件重算总数和adapter计数并校验Code Graph完整查询",
+      args: {
+        runId: tool.schema.string(),
+        serviceId: tool.schema.string(),
+        workerId: tool.schema.string(),
+        leaseToken: tool.schema.string(),
+        operationId: tool.schema.string(),
+        status: tool.schema.enum(["COMPLETE", "RETRYABLE_FAILED", "FAILED"]),
+        inventoryJson: tool.schema.string().optional(),
+        errorCode: tool.schema.string().optional(),
+      },
+      async execute(args, context) {
+        return result(await commitDiscovery(context.worktree, args, context.agent));
+      },
+    }),
+    spring_discovery_status: tool({
+      description: "读取逐服务入口发现checkpoint及仍需重试的服务",
+      args: { runId: tool.schema.string() },
+      async execute(args, context) {
+        assertPrimary(context);
+        return result(await discoveryStatus(context.worktree, args.runId));
+      },
+    }),
+    spring_state_plan: tool({
+      description: "从已checkpoint的逐服务入口清单冻结分析单元；未使用发现租约时兼容显式entriesJson",
+      args: {
+        runId: tool.schema.string(),
+        entriesJson: tool.schema.string().optional(),
         operationId: tool.schema.string(),
       },
       async execute(args, context) {
@@ -2187,8 +2491,9 @@ const SpringBusinessStatePlugin = async () => ({
 Object.defineProperty(SpringBusinessStatePlugin, "__test", {
   value: Object.freeze({
     buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints,
-    controlRun, diffGraphSnapshots, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun,
+    claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun,
     assertSafeConfigAgent, queryGraphSnapshot, queryTopologySnapshot, recoverRun, resolveTrustedGraph, seedIncrementalRun, statusRun, submitReport,
+    assertConfigurationSemantics, recoverExpiredDiscoveryLeases,
   }),
   enumerable: false,
 });
