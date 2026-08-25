@@ -82,6 +82,8 @@ def validate_structure() -> list[str]:
         check("grep: deny" in agent_text, f"{path.name}仍允许通用grep")
         check(all(f'"**/*.{suffix}": deny' in agent_text for suffix in ("properties", "yml", "yaml")), f"{path.name}仍可直接读取应用配置秘密")
         check("spring_config_resolve: allow" in agent_text, f"{path.name}缺少脱敏配置解析工具")
+        if path.stem != "spring-config-auditor":
+            check("codegraph_*: allow" in agent_text, f"{path.name}缺少CodeGraph薄适配器权限")
     opencode = shutil.which("opencode")
     if opencode:
         resolved = json.loads(run_opencode_config(opencode))
@@ -91,6 +93,12 @@ def validate_structure() -> list[str]:
     check(len(schemas) == 21, f"Schema数量应为21，实际{len(schemas)}")
     skill = read(SKILL / "SKILL.md")
     check("version: 2.0.0" in skill and len(skill.splitlines()) < 500, "Skill版本或长度错误")
+    check(".opencode/spring-business-tracer.json" in skill, "Skill未声明固定配置路径")
+    check("codegraph_bounded_query" in skill and "不是第二套代码图" in skill, "Skill未声明CodeGraph CLI薄适配器")
+    doctor = read(ROOT / ".opencode/commands/spring-doctor.md")
+    check("仅当解析结果为空" in doctor and "禁止自行改回默认值" in doctor, "Doctor未严格绑定命令Profile参数")
+    incremental_validator = read(ROOT / ".opencode/agents/spring-incremental-validator.md")
+    check("V2基线" in incremental_validator and "V1基线" not in incremental_validator, "增量Validator描述仍引用旧版基线")
     run(["node", "tests/scripts/validate_schemas.mjs"])
     return ["Java-only V2、1主7子Agent、14命令、21 Schema与最小权限闭合"]
 
@@ -100,6 +108,8 @@ def validate_plugin() -> list[str]:
     graph = read(ROOT / ".opencode/plugins/spring-business/graph-v2.js")
     for token in ("resolutionContextHash", "adapterRegistryFingerprint", "changedConfigKeys", "spring_topology_query", "spring_config_resolve", "topologyRootHash", "CONFIG_PRECEDENCE"):
         check(token in plugin, f"插件缺少{token}")
+    for token in ("codegraph_bounded_query", "LIMIT_REACHED", "EXPLICIT_COMPLETE", "codegraph\", command"):
+        check(token in plugin, f"CodeGraph薄适配器缺少{token}")
     for token in ("MAX_SOURCE_BYTES", "PLACEHOLDER_CYCLE", "SECRET_KEY", "CONFIG_SOURCE_FORBIDDEN", "maxAliasCount: 0"):
         check(token in resolver, f"配置解析器缺少{token}")
     for token in ("MESSAGE_SUBSCRIPTION", "provenance", "adjacency-out", "CURSOR_SNAPSHOT_OR_QUERY_MISMATCH", "MAX_QUERY_MS"):

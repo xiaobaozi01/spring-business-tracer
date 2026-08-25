@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { link, mkdir, mkdtemp, readFile, rename, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rename, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import SpringBusinessStatePlugin from "../../.opencode/plugins/spring-business-state.js";
 import { resolveAnalysisContexts } from "../../.opencode/plugins/spring-business/config-resolver.js";
 import { createTopology, queryTopologyBundle, verifyTopologyBundle, writeTopologyBundle, __test as graphTest } from "../../.opencode/plugins/spring-business/graph-v2.js";
 
-const { assertConfigurationSemantics, assertSafeConfigAgent, buildGraphSnapshot, claimBatch, claimDiscovery, closeBatch, commitDiscovery, commitUnit, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverExpiredDiscoveryLeases, recoverRun, seedIncrementalRun, statusRun, submitReport } = SpringBusinessStatePlugin.__test;
+const { assertConfigurationSemantics, assertSafeConfigAgent, buildGraphSnapshot, claimBatch, claimDiscovery, closeBatch, commitDiscovery, commitUnit, computeWorkspaceFingerprints, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverExpiredDiscoveryLeases, recoverRun, runCodeGraphQuery, seedIncrementalRun, statusRun, submitReport, summarizeWorkspaceFingerprints } = SpringBusinessStatePlugin.__test;
 const pluginHooks = await SpringBusinessStatePlugin();
 assert.deepEqual(Object.keys(pluginHooks.tool).sort(), [
+  "codegraph_bounded_query",
   "spring_config_resolve", "spring_discovery_claim", "spring_discovery_commit", "spring_discovery_status", "spring_graph_build", "spring_graph_diff", "spring_graph_query", "spring_migrate_config", "spring_report_submit",
   "spring_state_claim", "spring_state_close_batch", "spring_state_commit", "spring_state_control", "spring_state_fingerprint", "spring_state_heartbeat",
   "spring_state_init", "spring_state_plan", "spring_state_recover", "spring_state_seed", "spring_state_status", "spring_topology_query",
-].sort(), "V2插件必须完整暴露21个状态、配置、发现和图工具");
+].sort(), "V2插件必须完整暴露22个CodeGraph、状态、配置、发现和图工具");
 let serial = 0;
 const op = (label) => `${label}-${String(++serial).padStart(8, "0")}`;
 const rejects = (fn, fragment) => assert.rejects(fn, (error) => String(error.message).includes(fragment));
@@ -87,6 +88,46 @@ const fp = {
 };
 assert.doesNotThrow(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 } }));
 assert.throws(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 100 } }), /CONFIG_QUERY_LIMIT_MISMATCH/);
+const monorepoRoot = await mkdtemp(join(tmpdir(), "spring-monorepo-fingerprint-v20-"));
+await mkdir(join(monorepoRoot, ".opencode"), { recursive: true });
+await mkdir(join(monorepoRoot, "service-a/src/main/java"), { recursive: true });
+await writeFile(join(monorepoRoot, "service-a/src/main/java/App.java"), "class App {}\n");
+const monorepoConfig = {
+  analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 },
+  workspace: { services: [{ id: "service-a", root: "service-a", packages: ["com.acme"], aliases: ["service-a"] }], sharedModules: [] },
+  analysisContexts: { defaultContext: "default", definitions: [{ id: "default", activeProfiles: [], propertySources: [], optionalSources: true }] },
+  configResolution: {}, adapterRegistry: {},
+};
+await writeFile(join(monorepoRoot, ".opencode/spring-business-tracer.json"), JSON.stringify(monorepoConfig));
+await rejects(() => computeWorkspaceFingerprints(monorepoRoot, { codeGraphStatus: async () => ({}), codeGraphVersion: async () => "1.5.0" }), "codeGraphProjectPath");
+monorepoConfig.workspace.services[0].codeGraphProjectPath = ".";
+await writeFile(join(monorepoRoot, ".opencode/spring-business-tracer.json"), JSON.stringify(monorepoConfig));
+const seenProjectPaths = [];
+const monorepoFingerprint = await computeWorkspaceFingerprints(monorepoRoot, { codeGraphStatus: async (projectPath) => { seenProjectPaths.push(projectPath); return { projectPath }; }, codeGraphVersion: async () => "1.5.0" });
+assert.deepEqual(seenProjectPaths, [await realpath(monorepoRoot)], "共用根索引必须按显式codeGraphProjectPath检查");
+assert.equal(monorepoFingerprint.serviceRootCount, 1);
+const compactFingerprint = summarizeWorkspaceFingerprints(monorepoFingerprint);
+assert.equal(compactFingerprint.indexProjects.length, 1);
+assert(!("resolutionSummary" in compactFingerprint), "公开指纹结果不得返回完整配置明细");
+const boundedCallees = await runCodeGraphQuery(monorepoRoot, { mode: "callees", query: "App.run", projectPath: ".", limit: 101 }, {
+  execRunner: async (binary, args) => {
+    assert.equal(binary, "codegraph");
+    assert.deepEqual(args, ["callees", "App.run", "-p", await realpath(monorepoRoot), "-l", "101", "-j"]);
+    return { stdout: JSON.stringify({ symbol: "App.run", callees: [{ name: "save", kind: "method", filePath: "App.java", startLine: 1 }] }), stderr: "" };
+  },
+});
+assert.equal(boundedCallees.resultCount, 1);
+assert.equal(boundedCallees.truncated, false);
+assert.equal(boundedCallees.completionStatus, "EXPLICIT_COMPLETE");
+await rejects(() => runCodeGraphQuery(monorepoRoot, { mode: "callees", query: "method:deadbeef", projectPath: ".", limit: 101 }, {
+  execRunner: async () => ({ stdout: "ℹ Symbol not found\n", stderr: "" }),
+}), "qualifiedName");
+const cutoffQuery = await runCodeGraphQuery(monorepoRoot, { mode: "query", query: "kind:route", projectPath: ".", limit: 101 }, {
+  execRunner: async () => ({ stdout: JSON.stringify(Array.from({ length: 101 }, (_, id) => ({ id }))), stderr: "" }),
+});
+assert.equal(cutoffQuery.truncated, true);
+assert.equal(cutoffQuery.completionStatus, "LIMIT_REACHED");
+assert.equal(cutoffQuery.summaryOmittedCount, 1);
 const expiredDiscovery = { retryLimit: 2, discovery: { units: { order: { serviceId: "order", status: "LEASED", attempts: 1, leaseUntil: "2000-01-01T00:00:00.000Z", leaseOwner: "worker", leaseToken: "token" } } } };
 assert.equal(recoverExpiredDiscoveryLeases(expiredDiscovery), 1);
 assert.equal(expiredDiscovery.discovery.units.order.status, "RETRYABLE_FAILED");
@@ -494,4 +535,4 @@ await link(externalSentinel, hardlinkTarget);
 await writeTopologyBundle(hardlinkWriteRoot, { contextIds: ["prod-cn"], units: {} }, [{ id: "hardlink-write", type: "SYMBOL", entryMembership: [], services: [] }], []);
 assert.equal(await readFile(externalSentinel, "utf8"), "outside-must-remain-unchanged");
 assert.equal((await queryTopologyBundle(hardlinkWriteRoot, { query: "node", key: "hardlink-write", limit: 1 })).rows[0].id, "hardlink-write");
-console.log("PASS: V2.0的21工具、发现checkpoint、配置/脱敏、receiver证据、状态全生命周期、provenance、增量/tombstone、有界diff、安全I/O与V1.5迁移动态测试");
+console.log("PASS: V2.0的22工具、CodeGraph有界适配器、发现checkpoint、配置/脱敏、receiver证据、状态全生命周期、provenance、增量/tombstone、有界diff、安全I/O与V1.5迁移动态测试");

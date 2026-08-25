@@ -10,10 +10,13 @@ metadata:
 
 # Spring Business Tracer V2.0
 
+项目配置的固定路径是工作区根目录下的 `.opencode/spring-business-tracer.json`。需要配置时直接读取该文件，不要用 glob、目录遍历或业务 `config/` 目录猜测位置。
+
 ## 不可变原则
 
 - 仅支持 Java；不实现 Java parser、LSP 调用图或第二套代码图。
 - Java 符号、caller/callee、接口实现和跨文件 Java 边只能来自用户已安装并已完成索引的 Code Graph。
+- 优先使用工具包的 `codegraph_bounded_query` 适配器调用已安装的 CodeGraph CLI；它只包装官方 `status/query/callees/callers`，补充有界查询的机器可读完整性字段，不是第二套代码图。摘要型 `explore` 仅可作定位辅助，不能代替正式完整查询。
 - grep/glob/read 只发现入口候选和读取注解、配置、XML、SQL、Entity、路由等非 Java 边证据。
 - `codeGraph.queryLimit` 必须严格等于 `analysis.maxBranches+1`；查询要显式传该 `limit`，且工具明确返回 `resultCount/truncated/completionStatus/summaryOmittedCount`。`maxFiles` 不能替代 `limit`；出现“and N more”等摘要省略一律 FAIL/PARTIAL。
 - 跨进程关系是 `LOGICAL_BOUNDARY`，必须有发送端、接收端和唯一规范 key 的双侧证据；不能任选目标。

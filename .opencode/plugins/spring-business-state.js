@@ -217,6 +217,115 @@ async function defaultCodeGraphVersion(root) {
   return `${stdout}\n${stderr}`.trim();
 }
 
+async function runCodeGraphQuery(worktree, input, options = {}) {
+  const root = await realpath(resolve(worktree));
+  const config = await readJson(join(root, ".opencode/spring-business-tracer.json"));
+  assertConfigurationSemantics(config);
+  const modules = [
+    ...(config.workspace?.services?.length ? config.workspace.services : [{ codeGraphProjectPath: "." }]),
+    ...(config.workspace?.sharedModules ?? []),
+  ];
+  const allowedProjects = new Set();
+  for (const module of modules) {
+    if (typeof module.codeGraphProjectPath !== "string" || !module.codeGraphProjectPath) throw new Error("Code Graph projectPath配置缺失");
+    const project = await realpath(resolve(root, module.codeGraphProjectPath));
+    if (project !== root && !project.startsWith(root + sep)) throw new Error("Code Graph projectPath越出工作区");
+    allowedProjects.add(project);
+  }
+  const requestedProject = await realpath(resolve(root, input.projectPath ?? "."));
+  if (!allowedProjects.has(requestedProject)) throw new Error("请求的Code Graph projectPath未在workspace中声明");
+  if (input.mode === "status") {
+    const status = await (options.statusRunner ?? defaultCodeGraphStatus)(requestedProject);
+    return { tool: "codegraph status", mode: "status", projectPath: requestedProject, resultCount: 1, truncated: false, completionStatus: "EXPLICIT_COMPLETE", summaryOmittedCount: 0, status };
+  }
+  const limit = Number(input.limit);
+  if (!Number.isInteger(limit) || limit !== Number(config.codeGraph.queryLimit)) {
+    throw new Error(`Code Graph查询limit必须严格等于配置值${config.codeGraph.queryLimit}`);
+  }
+  if (!new Set(["query", "callees", "callers"]).has(input.mode)) throw new Error("不支持的Code Graph查询模式");
+  if (typeof input.query !== "string" || !input.query.trim()) throw new Error("Code Graph查询内容不能为空");
+  const command = input.mode === "query"
+    ? ["query", input.query, "-p", requestedProject, "-l", String(limit), "-j"]
+    : [input.mode, input.query, "-p", requestedProject, "-l", String(limit), "-j"];
+  if (input.mode === "query" && input.kind) command.push("-k", input.kind);
+  const runner = options.execRunner ?? execFileAsync;
+  const { stdout, stderr } = await runner("codegraph", command, { cwd: requestedProject, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 });
+  if (stderr?.trim()) throw new Error(`Code Graph ${input.mode}失败：${stderr.trim()}`);
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`Code Graph ${input.mode}未返回JSON；callees/callers请使用qualifiedName而不是node hash`);
+  }
+  const rows = input.mode === "query" ? parsed : parsed?.[input.mode];
+  if (!Array.isArray(rows)) throw new Error(`Code Graph ${input.mode}返回结构非法`);
+  const truncated = rows.length >= limit;
+  return {
+    tool: `codegraph ${input.mode}`,
+    mode: input.mode,
+    projectPath: requestedProject,
+    query: input.query,
+    kind: input.kind ?? null,
+    limit,
+    resultCount: rows.length,
+    truncated,
+    completionStatus: truncated ? "LIMIT_REACHED" : "EXPLICIT_COMPLETE",
+    summaryOmittedCount: truncated ? 1 : 0,
+    rows,
+  };
+}
+
+function summarizeWorkspaceFingerprints(fingerprints) {
+  const projectMap = new Map();
+  const indexMetadata = Object.create(null);
+  for (const [moduleId, status] of Object.entries(fingerprints.indexMetadata ?? {})) {
+    const projectPath = status.projectPath ?? null;
+    indexMetadata[moduleId] = { projectPath };
+    if (!projectMap.has(projectPath)) {
+      projectMap.set(projectPath, {
+        projectPath,
+        moduleIds: [],
+        initialized: status.initialized,
+        version: status.version,
+        lastIndexed: status.lastIndexed,
+        fileCount: status.fileCount,
+        nodeCount: status.nodeCount,
+        edgeCount: status.edgeCount,
+        languages: status.languages,
+        pendingChanges: status.pendingChanges,
+        worktreeMismatch: status.worktreeMismatch,
+        index: status.index,
+      });
+    }
+    projectMap.get(projectPath).moduleIds.push(moduleId);
+  }
+  return {
+    configHash: fingerprints.configHash,
+    sourceSnapshot: fingerprints.sourceSnapshot,
+    indexFingerprint: fingerprints.indexFingerprint,
+    toolkitFingerprint: fingerprints.toolkitFingerprint,
+    resolutionContextHash: fingerprints.resolutionContextHash,
+    adapterRegistryFingerprint: fingerprints.adapterRegistryFingerprint,
+    contextIds: fingerprints.contextIds,
+    resolutionContexts: (fingerprints.resolutionSummary?.contexts ?? []).map((context) => ({
+      id: context.id,
+      contextHash: context.contextHash,
+      valueCount: context.values?.length ?? 0,
+      unresolvedCount: context.unresolved?.length ?? 0,
+    })),
+    serviceSnapshots: fingerprints.serviceSnapshots,
+    serviceRoots: fingerprints.serviceRoots,
+    sharedModuleSnapshots: fingerprints.sharedModuleSnapshots,
+    sharedModuleRoots: fingerprints.sharedModuleRoots,
+    indexMetadata,
+    indexProjects: [...projectMap.values()].map((project) => ({ ...project, moduleIds: project.moduleIds.sort() })),
+    sourceFileCount: fingerprints.sourceFileCount,
+    serviceRootCount: fingerprints.serviceRootCount,
+    sharedModuleRootCount: fingerprints.sharedModuleRootCount,
+    queryLimit: fingerprints.queryLimit,
+  };
+}
+
 async function computeSourceSnapshot(root, files) {
   const aggregate = createHash("sha256");
   for (const path of files) {
@@ -278,7 +387,7 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
   assertConfigurationSemantics(config);
   const configuredServices = config.workspace?.services?.length
     ? config.workspace.services
-    : [{ id: "workspace", root: ".", codeGraphProjectPath: "." }];
+    : [{ id: "workspace", root: ".", codeGraphProjectPath: ".", packages: [], aliases: [] }];
   const configuredSharedModules = config.workspace?.sharedModules ?? [];
   const services = [];
   const sharedModules = [];
@@ -287,13 +396,18 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
     const label = kind === "service" ? "服务" : "共享模块";
     if (typeof module.id !== "string" || !module.id || workspaceIds.has(module.id)) throw new Error(`${label}id缺失或跨服务/共享模块重复：${module.id}`);
     if (typeof module.root !== "string" || !module.root || module.root.includes("\0")) throw new Error(`${label}${module.id}的root非法`);
+    if (typeof module.codeGraphProjectPath !== "string" || !module.codeGraphProjectPath || module.codeGraphProjectPath.includes("\0")) {
+      throw new Error(`${label}${module.id}的codeGraphProjectPath缺失或非法；monorepo共用根索引时请显式配置为.`);
+    }
+    if (!Array.isArray(module.packages) || !module.packages.every((item) => typeof item === "string")) throw new Error(`${label}${module.id}的packages必须为字符串数组`);
+    if (!Array.isArray(module.aliases) || !module.aliases.every((item) => typeof item === "string")) throw new Error(`${label}${module.id}的aliases必须为字符串数组`);
     workspaceIds.add(module.id);
     const moduleRoot = resolve(root, module.root);
     if (moduleRoot !== root && !moduleRoot.startsWith(root + sep)) throw new Error(`${label}源码根越出工作区`);
     const moduleReal = await realpath(moduleRoot);
     const rootReal = await realpath(root);
     if (moduleReal !== rootReal && !moduleReal.startsWith(rootReal + sep)) throw new Error(`${label}源码根符号链接越出工作区`);
-    const projectPath = resolve(root, module.codeGraphProjectPath ?? module.root);
+    const projectPath = resolve(root, module.codeGraphProjectPath);
     const projectReal = await realpath(projectPath);
     if (projectReal !== rootReal && !projectReal.startsWith(rootReal + sep)) throw new Error("Code Graph projectPath越出工作区");
     return { id: module.id, root: moduleReal, relativeRoot: module.root, projectPath: projectReal, kind };
@@ -2225,12 +2339,26 @@ function result(value) {
 
 const SpringBusinessStatePlugin = async () => ({
   tool: {
+    codegraph_bounded_query: tool({
+      description: "只读调用已安装的CodeGraph CLI，提供有界JSON查询及显式完整性字段；不是第二套代码图",
+      args: {
+        mode: tool.schema.enum(["status", "query", "callees", "callers"]),
+        query: tool.schema.string().optional(),
+        kind: tool.schema.string().regex(/^[a-z_]+$/).optional(),
+        projectPath: tool.schema.string().optional(),
+        limit: tool.schema.number().int().min(1).max(1000).optional(),
+      },
+      async execute(args, context) {
+        assertSafeConfigAgent(context);
+        return result(await runCodeGraphQuery(context.worktree, args));
+      },
+    }),
     spring_state_fingerprint: tool({
-      description: "只读计算配置、逐服务源码、Code Graph索引、工具包、解析上下文与adapter registry指纹",
+      description: "只读计算并紧凑返回配置、逐服务源码、Code Graph索引、工具包、解析上下文与adapter registry指纹",
       args: {},
       async execute(_args, context) {
         assertPrimary(context);
-        return result(await computeWorkspaceFingerprints(context.worktree));
+        return result(summarizeWorkspaceFingerprints(await computeWorkspaceFingerprints(context.worktree)));
       },
     }),
     spring_state_init: tool({
@@ -2490,7 +2618,7 @@ const SpringBusinessStatePlugin = async () => ({
 
 Object.defineProperty(SpringBusinessStatePlugin, "__test", {
   value: Object.freeze({
-    buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints,
+    buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints, runCodeGraphQuery, summarizeWorkspaceFingerprints,
     claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun,
     assertSafeConfigAgent, queryGraphSnapshot, queryTopologySnapshot, recoverRun, resolveTrustedGraph, seedIncrementalRun, statusRun, submitReport,
     assertConfigurationSemantics, recoverExpiredDiscoveryLeases,

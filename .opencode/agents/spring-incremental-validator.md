@@ -1,5 +1,5 @@
 ---
-description: 独立核对V1基线、全量入口重发现、逐服务源码变化和服务闭包失效集合
+description: 独立核对V2基线、全量入口重发现、逐服务源码变化和服务闭包失效集合
 mode: subagent
 hidden: true
 temperature: 0

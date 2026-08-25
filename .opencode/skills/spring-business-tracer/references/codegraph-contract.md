@@ -4,6 +4,8 @@
 
 Code Graph 版本可能只公开一个综合工具（例如 explore），也可能分别公开 symbol、callee、caller、impact、status 工具。根据工具描述和一次最小查询确认能力，记录实际工具名；不要猜测或调用未公开名称。
 
+工具包内置的 `codegraph_bounded_query` 是已安装 CodeGraph CLI 的只读薄适配器，只调用官方 `status/query/callees/callers` 并把 `limit` 触顶情况保守标准化为完整性字段；它属于 Code Graph 事实源，不属于原生调用图或文本调用图降级。优先使用该适配器。`spring_state_fingerprint.indexMetadata` 可作为索引 complete/freshness 的机器证据。共用同一 `codeGraphProjectPath` 的模块只需按唯一 projectPath 探测一次。
+
 综合工具只有在返回内容能逐项满足下表时才算具备能力。只返回自然语言摘要但没有符号身份、边和源码位置，不算通过。
 
 ## Profile 必需能力
