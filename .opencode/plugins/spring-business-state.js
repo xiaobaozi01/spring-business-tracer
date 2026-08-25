@@ -41,6 +41,7 @@ const SAFE_CONFIG_AGENTS = new Set([
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const WORKER_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const OPERATION_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,127}$/;
+const ENTRY_ID_MAX_LENGTH = 512;
 const ENTRY_ADAPTERS = new Set(["SPRING_MVC", "SPRING_WEBFLUX", "SPRING_WEBFLUX_ANNOTATED", "WEBFLUX_FUNCTIONAL_STATIC_HANDLER", "KAFKA", "KAFKA_LISTENER", "RABBIT", "RABBIT_LISTENER", "JMS", "JMS_STATIC_LISTENER", "ROCKETMQ", "SCHEDULED", "QUARTZ", "QUARTZ_STATIC_JOB_TRIGGER", "XXL_JOB", "SPRING_EVENT", "DUBBO", "GRPC", "GRPC_UNARY_PROTO", "GRAPHQL", "GRAPHQL_ANNOTATED_ROOT", "APPLICATION_RUNNER", "KAFKA_STREAMS"]);
 const execFileAsync = promisify(execFile);
 const SOURCE_EXTENSIONS = new Set([".java", ".xml", ".sql", ".properties", ".yml", ".yaml", ".json", ".gradle", ".kts", ".proto", ".graphql", ".graphqls", ".conf", ".toml"]);
@@ -84,7 +85,47 @@ function nowIso() {
 }
 
 function assertIdentifier(value, pattern, label) {
-  if (!pattern.test(value)) throw new Error(`${label}格式非法`);
+  if (!pattern.test(value)) {
+    const code = label === "operationId" ? "OPERATION_ID_INVALID" : label === "workerId" ? "WORKER_ID_INVALID" : "RUN_ID_INVALID";
+    diagnosticError(code, `${label}格式非法`, {
+      field: label,
+      expected: label === "operationId" ? "8-128字符，字母数字开头，仅允许._:-" : label === "workerId" ? "1-128字符，字母数字开头，仅允许._:-" : "1-128字符，字母数字开头，仅允许._-",
+      actual: value,
+      retryable: true,
+      nextAction: label === "operationId" ? "使用<phase>-<target>-<random>格式的新ID，完全相同的重试才复用" : `生成符合格式的${label}`,
+    });
+  }
+}
+
+function diagnosticValue(value) {
+  if (value === undefined) return "<missing>";
+  const encoded = typeof value === "string" ? JSON.stringify(value) : canonicalJson(value);
+  return encoded.length > 240 ? `${encoded.slice(0, 237)}...` : encoded;
+}
+
+function diagnosticError(code, message, details = {}) {
+  const parts = [`[${code}] ${message}`];
+  for (const key of ["field", "expected", "actual", "retryable", "nextAction"]) {
+    if (details[key] !== undefined) parts.push(`${key}=${diagnosticValue(details[key])}`);
+  }
+  throw new Error(parts.join("；"));
+}
+
+function assertEntryId(value) {
+  if (typeof value !== "string" || !value || value.length > ENTRY_ID_MAX_LENGTH || value.trim() !== value || /[\x00-\x1f\x7f]/u.test(value)) {
+    diagnosticError("ENTRY_ID_INVALID", "entryId必须是1到512字符的稳定业务ID，可包含HTTP/MQ/RPC触发器所需的冒号和斜杠，但不得包含控制字符或首尾空白", {
+      field: "entryId", actual: value, retryable: true,
+      nextAction: "使用包含service identity的规范稳定ID，例如mall-admin:http:POST:/admin/login",
+    });
+  }
+}
+
+function entryStorageKey(entryId) {
+  return `entry-${sha256([entryId]).slice(7)}`;
+}
+
+function entryDocumentFileName(unit) {
+  return `${entryStorageKey(unit.id)}.md`;
 }
 
 function assertPrimary(context) {
@@ -590,7 +631,7 @@ function updateCounters(run) {
 }
 
 function assertCurrentRun(run) {
-  if (run.schemaVersion !== SCHEMA_VERSION) throw new Error(`旧版run ${run.schemaVersion}只读；V2.0要求FULL_REBASE，不能直接复用分析结论`);
+  if (run.schemaVersion !== SCHEMA_VERSION) throw new Error(`RUN_SCHEMA_VERSION_UNSUPPORTED：仅支持schemaVersion=${SCHEMA_VERSION}，当前为${run.schemaVersion ?? "MISSING"}；请删除该运行并重新执行全量扫描`);
 }
 
 function recoverExpiredLeases(run, timestamp = Date.now()) {
@@ -612,22 +653,31 @@ function recoverExpiredLeases(run, timestamp = Date.now()) {
   return recovered;
 }
 
-function operationReplay(run, input) {
+function operationReplay(run, operationType, input) {
   if (!input.operationId) return null;
   assertIdentifier(input.operationId, OPERATION_ID, "operationId");
-  const digest = sha256([canonicalJson({ ...input, operationId: undefined })]);
+  const request = canonicalJson({ ...input, operationId: undefined });
+  const digest = sha256([operationType, "\0", request]);
   const existing = run.recentOperations?.[input.operationId];
   if (!existing) return { digest };
-  if (existing.digest !== digest) throw new Error("operationId已用于不同请求");
+  if (existing.operationType !== operationType || existing.digest !== digest) {
+    diagnosticError("OPERATION_ID_CONFLICT", "operationId已绑定另一个请求，不能修改参数或跨操作复用", {
+      field: "operationId",
+      expected: { operationType: existing.operationType, requestDigest: existing.digest, createdAt: existing.at },
+      actual: { operationType, requestDigest: digest },
+      retryable: true,
+      nextAction: "重试同一请求时保持原参数；参数或操作改变时生成新operationId",
+    });
+  }
   return { digest, result: existing.result };
 }
 
-function recordOperation(run, input, digest, resultValue) {
+function recordOperation(run, operationType, input, digest, resultValue) {
   if (!input.operationId) return;
   const storedResult = resultValue === run
     ? { runId: run.runId, phase: run.phase, counts: { ...run.counts } }
     : structuredClone(resultValue);
-  run.recentOperations[input.operationId] = { digest, at: nowIso(), result: storedResult };
+  run.recentOperations[input.operationId] = { operationType, digest, at: nowIso(), result: storedResult };
   const ids = Object.keys(run.recentOperations);
   if (ids.length > 2000) {
     for (const id of ids.slice(0, ids.length - 2000)) delete run.recentOperations[id];
@@ -662,17 +712,68 @@ async function requireFreshFingerprints(run, input, paths, eventType) {
   throw new Error("运行指纹已变化，状态标记为STALE");
 }
 
+function runFingerprints(run) {
+  return {
+    config: run.configHash,
+    source: run.sourceSnapshot,
+    index: run.indexFingerprint,
+    toolkit: run.toolkitFingerprint,
+    resolvedConfig: run.resolutionContextHash,
+    adapterRegistry: run.adapterRegistryFingerprint,
+  };
+}
+
 function assertFingerprintObject(value, run, label) {
-  if (!value || typeof value !== "object") throw new Error(`${label}缺少fingerprints`);
-  if (value.config !== run.configHash || value.source !== run.sourceSnapshot || value.index !== run.indexFingerprint || value.toolkit !== run.toolkitFingerprint || value.resolvedConfig !== run.resolutionContextHash || value.adapterRegistry !== run.adapterRegistryFingerprint) {
-    throw new Error(`${label}指纹与当前运行不一致`);
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    diagnosticError("FINGERPRINTS_MISSING", `${label}缺少fingerprints`, {
+      field: "fingerprints", expected: runFingerprints(run), actual: value, retryable: true,
+      nextAction: "省略fingerprints并由插件自动绑定；需要显式传入时原样使用claim/report context返回的六指纹",
+    });
+  }
+  const expected = runFingerprints(run);
+  for (const key of Object.keys(expected)) {
+    if (value[key] !== expected[key]) {
+      diagnosticError("FINGERPRINT_MISMATCH", `${label}的${key}指纹与当前run不一致`, {
+        field: `fingerprints.${key}`, expected: expected[key], actual: value[key], retryable: false,
+        nextAction: "不要猜测或重算报告头；重新领取租约/报告上下文，若源码或索引已变化则让run进入STALE并新建run",
+      });
+    }
   }
 }
 
-function assertPassedChecks(value, label) {
-  if (!Array.isArray(value) || value.length === 0) throw new Error(`${label}必须包含非空checks`);
-  if (value.some((check) => !check || check.passed !== true || typeof check.code !== "string" || !check.code || !Array.isArray(check.evidence))) {
-    throw new Error(`${label}包含未通过或非法check`);
+function assertReportChecks(value, label, spec, decision) {
+  if (!Array.isArray(value) || value.length === 0) {
+    diagnosticError("REPORT_CHECKS_EMPTY", `${label}必须包含非空checks`, {
+      field: "checks", expected: spec.checks, actual: value, retryable: true,
+      nextAction: "调用spring_report_context取得requiredChecks，为每个code提供passed布尔值和非空evidence",
+    });
+  }
+  if (value.some((check) => !check || typeof check.passed !== "boolean" || typeof check.code !== "string" || !check.code || !Array.isArray(check.evidence) || check.evidence.length === 0)) {
+    diagnosticError("REPORT_CHECK_INVALID", `${label}包含非法check`, {
+      field: "checks", expected: "{code:string, passed:boolean, evidence:non-empty-array}[]", actual: value, retryable: true,
+      nextAction: "修正check结构；evidence必须指向本次独立查询或源码证据",
+    });
+  }
+  const codes = new Set(value.map((check) => check.code));
+  const missing = spec.checks.filter((code) => !codes.has(code));
+  if (missing.length) {
+    diagnosticError("REPORT_REQUIRED_CHECK_MISSING", `${label}缺少必需check`, {
+      field: "checks[].code", expected: spec.checks, actual: [...codes], retryable: true,
+      nextAction: `补充缺失的check：${missing.join(",")}`,
+    });
+  }
+  const required = value.filter((check) => spec.checks.includes(check.code));
+  if (decision === "ACCEPTED" && required.some((check) => check.passed !== true)) {
+    diagnosticError("REPORT_ACCEPTED_WITH_FAILED_CHECK", "ACCEPTED报告的必需check必须全部通过", {
+      field: "decision", expected: "REJECTED或NEEDS_REVIEW", actual: decision, retryable: true,
+      nextAction: "修正decision，不要将存在失败检查的报告标为ACCEPTED",
+    });
+  }
+  if (decision !== "ACCEPTED" && required.every((check) => check.passed === true)) {
+    diagnosticError("REPORT_NON_ACCEPTED_WITH_ALL_CHECKS_PASSED", "非ACCEPTED报告至少需要一个未通过的必需check", {
+      field: "decision", expected: "ACCEPTED", actual: decision, retryable: true,
+      nextAction: "若全部证据已闭合则改为ACCEPTED；否则标出实际未通过的check",
+    });
   }
 }
 
@@ -738,12 +839,35 @@ function recoverExpiredDiscoveryLeases(run, timestamp = Date.now()) {
   return recovered;
 }
 
-function validateServiceInventory(run, serviceId, text) {
-  const inventory = parseStructuredJson(text, "inventoryJson");
-  if (inventory.schemaVersion !== SCHEMA_VERSION || inventory.runId !== run.runId || inventory.serviceId !== serviceId) {
-    throw new Error("入口清单版本、runId或serviceId不匹配");
+function validateBoundMetadata(value, key, expected, label, code) {
+  if (value[key] !== undefined && canonicalJson(value[key]) !== canonicalJson(expected)) {
+    diagnosticError(code, `${label}的${key}与当前租约不匹配`, {
+      field: key, expected, actual: value[key], retryable: false,
+      nextAction: "不要复用其他run/服务的产物；重新领取当前任务并省略该头字段，由插件自动绑定",
+    });
   }
-  assertFingerprintObject(inventory.fingerprints, run, "入口清单");
+}
+
+function validateServiceInventory(run, serviceId, input, bindMetadata = false) {
+  const inventory = parseStructuredInput(input, "inventory", "object");
+  if (bindMetadata) {
+    validateBoundMetadata(inventory, "schemaVersion", SCHEMA_VERSION, "入口清单", "INVENTORY_SCHEMA_VERSION_MISMATCH");
+    validateBoundMetadata(inventory, "runId", run.runId, "入口清单", "INVENTORY_RUN_ID_MISMATCH");
+    validateBoundMetadata(inventory, "serviceId", serviceId, "入口清单", "INVENTORY_SERVICE_ID_MISMATCH");
+    if (inventory.fingerprints !== undefined) assertFingerprintObject(inventory.fingerprints, run, "入口清单");
+    inventory.schemaVersion = SCHEMA_VERSION;
+    inventory.runId = run.runId;
+    inventory.serviceId = serviceId;
+    inventory.fingerprints = runFingerprints(run);
+  } else {
+    validateBoundMetadata(inventory, "schemaVersion", SCHEMA_VERSION, "已持久化入口清单", "INVENTORY_SCHEMA_VERSION_MISMATCH");
+    validateBoundMetadata(inventory, "runId", run.runId, "已持久化入口清单", "INVENTORY_RUN_ID_MISMATCH");
+    validateBoundMetadata(inventory, "serviceId", serviceId, "已持久化入口清单", "INVENTORY_SERVICE_ID_MISMATCH");
+    if (inventory.schemaVersion === undefined || inventory.runId === undefined || inventory.serviceId === undefined) {
+      diagnosticError("INVENTORY_PERSISTED_HEADER_MISSING", "已持久化入口清单缺少完整头信息", { expected: ["schemaVersion", "runId", "serviceId"], actual: inventory, retryable: false, nextAction: "将run标记为STALE并重新发现该服务" });
+    }
+    assertFingerprintObject(inventory.fingerprints, run, "已持久化入口清单");
+  }
   assertCompleteQueryLog(inventory.queryLog, run, "入口清单");
   if (!Array.isArray(inventory.entries) || !Array.isArray(inventory.adapters) || !Array.isArray(inventory.excludedCandidates)) {
     throw new Error("入口清单必须包含结构化entries/adapters/excludedCandidates数组");
@@ -780,15 +904,27 @@ function validateServiceInventory(run, serviceId, text) {
   return inventory;
 }
 
-function parseStructuredJson(text, label, expected = "object") {
-  if (typeof text !== "string" || !text.trim()) throw new Error(`${label}不能为空`);
-  if (Buffer.byteLength(text) > MAX_STRUCTURED_INPUT_BYTES) throw new Error(`${label}超过8MiB上限`);
+function parseStructuredInput(input, label, expected = "object") {
+  if (input === undefined || input === null) {
+    diagnosticError("STRUCTURED_INPUT_EMPTY", `${label}不能为空`, {
+      field: label, expected, actual: input, retryable: true,
+      nextAction: `传入结构化${label}参数`,
+    });
+  }
+  const value = input;
+  const valid = expected === "array" ? Array.isArray(value) : value && typeof value === "object" && !Array.isArray(value);
+  if (!valid) {
+    diagnosticError("STRUCTURED_INPUT_TYPE_MISMATCH", `${label}类型不正确`, {
+      field: label, expected, actual: Array.isArray(value) ? "array" : typeof value, retryable: true,
+      nextAction: expected === "array" ? "直接传入entries数组，不要包装成{entries:[...]}" : "直接传入JSON对象，不要传入数组或Markdown",
+    });
+  }
   try {
-    const value = JSON.parse(text);
-    if (!value || typeof value !== "object" || (expected === "array" ? !Array.isArray(value) : Array.isArray(value))) throw new Error();
-    return value;
-  } catch {
-    throw new Error(`${label}不是合法JSON${expected === "array" ? "数组" : "对象"}`);
+    if (Buffer.byteLength(canonicalJson(value)) > MAX_STRUCTURED_INPUT_BYTES) diagnosticError("STRUCTURED_INPUT_TOO_LARGE", `${label}超过8MiB上限`, { field: label, expected: "<=8MiB", retryable: false });
+    return structuredClone(value);
+  } catch (error) {
+    if (String(error.message).startsWith("[STRUCTURED_INPUT_TOO_LARGE]")) throw error;
+    diagnosticError("STRUCTURED_INPUT_NOT_SERIALIZABLE", `${label}无法序列化`, { field: label, actual: error.message, retryable: true, nextAction: "只传入JSON可表示的字符串、数字、布尔值、null、数组和对象" });
   }
 }
 
@@ -827,12 +963,22 @@ async function readWorkspaceArtifact(worktree, relativePath, allowedPrefix, maxi
   return readRegularFile(target, maximumBytes);
 }
 
-function validateTraceResult(run, unit, text) {
-  const value = parseStructuredJson(text, "traceResultJson");
-  if (value.schemaVersion !== SCHEMA_VERSION || value.runId !== run.runId || value.entryId !== unit.id || value.status !== "TRACED") {
-    throw new Error("traceResult版本、runId、entryId或status不匹配");
+function validateTraceResult(run, unit, input, bindMetadata = false) {
+  const value = parseStructuredInput(input, "traceResult", "object");
+  if (bindMetadata) {
+    validateBoundMetadata(value, "schemaVersion", SCHEMA_VERSION, "traceResult", "TRACE_SCHEMA_VERSION_MISMATCH");
+    validateBoundMetadata(value, "runId", run.runId, "traceResult", "TRACE_RUN_ID_MISMATCH");
+    validateBoundMetadata(value, "entryId", unit.id, "traceResult", "TRACE_ENTRY_ID_MISMATCH");
+    validateBoundMetadata(value, "status", "TRACED", "traceResult", "TRACE_STATUS_MISMATCH");
+    if (value.fingerprints !== undefined) assertFingerprintObject(value.fingerprints, run, "traceResult");
+    Object.assign(value, { schemaVersion: SCHEMA_VERSION, runId: run.runId, entryId: unit.id, status: "TRACED", fingerprints: runFingerprints(run) });
+  } else {
+    for (const [key, expected, code] of [["schemaVersion", SCHEMA_VERSION, "TRACE_SCHEMA_VERSION_MISMATCH"], ["runId", run.runId, "TRACE_RUN_ID_MISMATCH"], ["entryId", unit.id, "TRACE_ENTRY_ID_MISMATCH"], ["status", "TRACED", "TRACE_STATUS_MISMATCH"]]) {
+      validateBoundMetadata(value, key, expected, "traceResult", code);
+      if (value[key] === undefined) diagnosticError("TRACE_PERSISTED_HEADER_MISSING", `traceResult缺少${key}`, { field: key, expected, actual: value[key], retryable: false, nextAction: "将该入口重新追踪" });
+    }
+    assertFingerprintObject(value.fingerprints, run, "traceResult");
   }
-  assertFingerprintObject(value.fingerprints, run, "traceResult");
   assertCompleteQueryLog(value.queryLog, run, "traceResult");
   assertTraceEdges(value, run);
   if (!Array.isArray(value.serviceClosure) || value.serviceClosure.length === 0 || !value.serviceClosure.includes(unit.service)) {
@@ -856,7 +1002,7 @@ function validateTraceResult(run, unit, text) {
 }
 
 async function writeTraceArtifact(paths, run, unit, value) {
-  const relative = `artifacts/${unit.id}/trace.json`;
+  const relative = `artifacts/${entryStorageKey(unit.id)}/trace.json`;
   await ensureSafeDirectoryChain(paths.directory, dirname(relative).split(sep).join("/"));
   const path = join(paths.directory, relative);
   await atomicWriteJson(path, value);
@@ -891,7 +1037,7 @@ async function initRun(worktree, input) {
       if (input.operationId) {
         const existing = await readJson(paths.state);
         assertCurrentRun(existing);
-        const replay = operationReplay(existing, input);
+        const replay = operationReplay(existing, "RUN_INIT", input);
         if (replay?.result) return replay.result;
       }
       throw new Error(`run已存在：${runId}`);
@@ -956,8 +1102,8 @@ async function initRun(worktree, input) {
     // Match the exact JSON representation persisted in the operation journal so
     // retries cannot differ only because in-memory objects contained undefined.
     const resultValue = JSON.parse(JSON.stringify(run));
-    const replay = operationReplay(run, input);
-    recordOperation(run, input, replay?.digest, resultValue);
+    const replay = operationReplay(run, "RUN_INIT", input);
+    recordOperation(run, "RUN_INIT", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -968,7 +1114,7 @@ async function claimDiscovery(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "DISCOVERY_CLAIM", input);
     if (replay?.result) return replay.result;
     if (!new Set(["CREATED", "PAUSED", "PAUSE_REQUESTED"]).has(run.phase)) throw new Error(`当前阶段不能领取入口发现：${run.phase}`);
     await requireFreshFingerprints(run, input, paths, "DISCOVERY_CLAIM_FINGERPRINT_MISMATCH");
@@ -995,8 +1141,20 @@ async function claimDiscovery(worktree, input) {
     }
     run.events.push({ at: nowIso(), type: "DISCOVERY_CLAIMED", services: selected.map((unit) => unit.serviceId), recovered });
     updateCounters(run);
-    const resultValue = { runId: run.runId, phase: run.phase, recovered, units: selected, remaining: Object.values(discoveryUnits(run)).filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId).sort() };
-    recordOperation(run, input, replay?.digest, resultValue);
+    const resultUnits = selected.map((unit) => ({
+      ...unit,
+      submissionContext: {
+        schemaVersion: SCHEMA_VERSION,
+        runId: run.runId,
+        serviceId: unit.serviceId,
+        fingerprints: runFingerprints(run),
+        operationIdSuggestion: `discovery-commit-${randomUUID()}`,
+        preferredParameter: "inventory",
+        autoBoundFields: ["schemaVersion", "runId", "serviceId", "fingerprints"],
+      },
+    }));
+    const resultValue = { runId: run.runId, phase: run.phase, recovered, units: resultUnits, remaining: Object.values(discoveryUnits(run)).filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId).sort() };
+    recordOperation(run, "DISCOVERY_CLAIM", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1009,9 +1167,10 @@ async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "DISCOVERY_COMMIT", input);
     if (replay?.result) return replay.result;
     if (run.phase !== "CREATED" && run.phase !== "PAUSE_REQUESTED") throw new Error(`当前阶段不能提交入口发现：${run.phase}`);
+    await requireFreshFingerprints(run, input, paths, "DISCOVERY_COMMIT_FINGERPRINT_MISMATCH");
     const unit = discoveryUnits(run)[input.serviceId];
     if (!unit) throw new Error(`未知入口发现服务：${input.serviceId}`);
     if (unit.status !== "LEASED" || unit.leaseOwner !== input.workerId || unit.leaseToken !== input.leaseToken) throw new Error("入口发现提交者或租约令牌不匹配");
@@ -1023,7 +1182,7 @@ async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
     }
     let inventory = null;
     if (input.status === "COMPLETE") {
-      inventory = validateServiceInventory(run, input.serviceId, input.inventoryJson);
+      inventory = validateServiceInventory(run, input.serviceId, input.inventory, true);
       const relative = `discovery/inventory-${sha256([input.serviceId]).slice(7)}.json`;
       await ensureSafeDirectoryChain(paths.directory, "discovery");
       await atomicWriteJson(join(paths.directory, relative), inventory);
@@ -1040,7 +1199,7 @@ async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
     run.events.push({ at: nowIso(), type: "DISCOVERY_COMMITTED", serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount });
     updateCounters(run);
     const resultValue = { runId: run.runId, serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount, artifactHash: unit.artifactHash, remaining: Object.values(discoveryUnits(run)).filter((item) => item.status !== "COMPLETE").map((item) => item.serviceId).sort() };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "DISCOVERY_COMMIT", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1052,7 +1211,16 @@ async function readDiscoveredEntries(paths, run) {
     if (unit.status !== "COMPLETE" || !unit.artifactPath || !unit.artifactHash) throw new Error(`服务${unit.serviceId}入口发现尚未完成`);
     const bytes = await readRegularFile(join(paths.directory, unit.artifactPath), MAX_STRUCTURED_INPUT_BYTES);
     if (sha256([bytes]) !== unit.artifactHash) throw new Error(`服务${unit.serviceId}入口清单工件哈希不匹配`);
-    const inventory = validateServiceInventory(run, unit.serviceId, bytes.toString("utf8"));
+    let persistedInventory;
+    try {
+      persistedInventory = JSON.parse(bytes.toString("utf8"));
+    } catch (error) {
+      diagnosticError("INVENTORY_ARTIFACT_JSON_INVALID", `服务${unit.serviceId}入口清单工件不是合法JSON`, {
+        field: unit.artifactPath, actual: error.message, retryable: false,
+        nextAction: "将run标记为STALE并重新发现该服务；不要手工修改缓存工件",
+      });
+    }
+    const inventory = validateServiceInventory(run, unit.serviceId, persistedInventory);
     for (const entry of inventory.entries) entries.push({
       id: entry.id,
       service: entry.serviceId,
@@ -1083,7 +1251,7 @@ async function planRun(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "RUN_PLAN", input);
     if (replay?.result) return replay.result;
     if (!fingerprintMatches(run, input)) {
       run.phase = "STALE";
@@ -1098,19 +1266,19 @@ async function planRun(worktree, input) {
     let entries;
     if (run.discovery?.started) {
       entries = await readDiscoveredEntries(paths, run);
-      if (input.entriesJson !== undefined) {
-        const supplied = parseStructuredJson(input.entriesJson, "entriesJson", "array").sort((a, b) => String(a.id).localeCompare(String(b.id)));
-        if (canonicalJson(supplied) !== canonicalJson(entries)) throw new Error("entriesJson与已持久化的逐服务入口清单不一致");
+      if (input.entries !== undefined) {
+        const supplied = parseStructuredInput(input.entries, "entries", "array").sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        if (canonicalJson(supplied) !== canonicalJson(entries)) throw new Error("entries与已持久化的逐服务入口清单不一致");
       }
     } else {
-      entries = parseStructuredJson(input.entriesJson, "entriesJson", "array");
+      entries = parseStructuredInput(input.entries, "entries", "array");
     }
     if (!Array.isArray(entries) || entries.length === 0) throw new Error("entries必须是非空数组");
     const ids = new Set();
     const units = Object.create(null);
     for (const entry of entries) {
       if (!entry || typeof entry.id !== "string") throw new Error("入口缺少id");
-      assertIdentifier(entry.id, RUN_ID, "entryId");
+      assertEntryId(entry.id);
       if (ids.has(entry.id)) throw new Error(`入口ID重复：${entry.id}`);
       if (typeof entry.service !== "string" || !Object.hasOwn(run.serviceSnapshots, entry.service)) throw new Error(`入口${entry.id} service不在workspace服务集合`);
       if (typeof entry.adapter !== "string" || !ENTRY_ADAPTERS.has(entry.adapter)) throw new Error(`入口${entry.id} adapter不在白名单`);
@@ -1157,7 +1325,7 @@ async function planRun(worktree, input) {
     run.events.push({ at: nowIso(), type: "RUN_PLANNED", entries: entries.length });
     updateCounters(run);
     const resultValue = { runId: run.runId, phase: run.phase, counts: run.counts };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "RUN_PLAN", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1168,7 +1336,7 @@ async function claimBatch(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "BATCH_CLAIM", input);
     if (replay?.result) return replay.result;
     if (new Set(["STALE", "FAILED", "COMPLETE", "PARTIAL"]).has(run.phase)) {
       throw new Error(`当前运行不可领取：${run.phase}`);
@@ -1229,8 +1397,16 @@ async function claimBatch(worktree, input) {
     }
     run.events.push({ at: nowIso(), type: "BATCH_CLAIMED", batchId, workerId: input.workerId, entries: selected.map((unit) => unit.id) });
     updateCounters(run);
-    const resultValue = { runId: run.runId, phase: run.phase, batchId, batchToken: batchId ? run.batches[batchId].token : null, recovered, units: selected };
-    recordOperation(run, input, replay?.digest, resultValue);
+    const resultUnits = selected.map((unit) => ({
+      ...unit,
+      submissionContext: {
+        operationIdSuggestion: `unit-${String(unit.leaseStage).toLowerCase()}-${randomUUID()}`,
+        preferredStructuredParameter: unit.leaseStage === "TRACE" ? "traceResult" : null,
+        ...(unit.leaseStage === "VALIDATE" ? reportSubmissionContext(run, "TRACE", "spring-trace-validator", { entryId: unit.id, batchToken: unit.fingerprintToken }) : {}),
+      },
+    }));
+    const resultValue = { runId: run.runId, phase: run.phase, batchId, batchToken: batchId ? run.batches[batchId].token : null, recovered, units: resultUnits };
+    recordOperation(run, "BATCH_CLAIM", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1242,7 +1418,7 @@ async function commitUnit(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "UNIT_COMMIT", input);
     if (replay?.result) return replay.result;
     if (new Set(["COMPLETE", "PARTIAL", "FAILED", "STALE"]).has(run.phase)) {
       throw new Error(`终态运行不能提交单元：${run.phase}`);
@@ -1275,7 +1451,7 @@ async function commitUnit(worktree, input) {
     const exhausted = input.status === "RETRYABLE_FAILED" && unit.stageAttempts[unit.leaseStage] > run.retryLimit;
     let artifact;
     if (input.status === "TRACED") {
-      const trace = validateTraceResult(run, unit, input.traceResultJson);
+      const trace = validateTraceResult(run, unit, input.traceResult, true);
       artifact = await writeTraceArtifact(paths, run, unit, trace);
       unit.artifactHash = artifact.hash;
       unit.traceArtifactPath = artifact.relative;
@@ -1287,18 +1463,18 @@ async function commitUnit(worktree, input) {
       unit.unownedDependency = trace.unownedDependency === true;
     } else if (input.status === "VERIFIED") {
       const report = run.reports[input.reportId];
-      if (!report || report.kind !== "TRACE" || report.entryId !== unit.id || report.traceHash !== unit.artifactHash || report.batchToken !== unit.fingerprintToken) {
-        throw new Error("缺少与当前入口、trace和验证租约绑定的独立报告");
+      if (!report || report.kind !== "TRACE" || report.payload?.decision !== "ACCEPTED" || report.entryId !== unit.id || report.traceHash !== unit.artifactHash || report.batchToken !== unit.fingerprintToken) {
+        diagnosticError("TRACE_ACCEPTED_REPORT_REQUIRED", "VERIFIED必须绑定当前入口、trace和VALIDATE租约的ACCEPTED独立报告", { field: "reportId", expected: { kind: "TRACE", decision: "ACCEPTED", entryId: unit.id, traceHash: unit.artifactHash, batchToken: unit.fingerprintToken }, actual: report ? { kind: report.kind, decision: report.payload?.decision, entryId: report.entryId, traceHash: report.traceHash, batchToken: report.batchToken } : null, retryable: true, nextAction: "若Validator返回REJECTED/NEEDS_REVIEW，提交BLOCKED或RETRYABLE_FAILED；仅使用ACCEPTED报告转为VERIFIED" });
       }
       unit.validationHash = report.hash;
     } else if (input.status === "PUBLISHED") {
       if (typeof input.documentContent !== "string" || !input.documentContent.trim()) throw new Error("PUBLISH必须提供非空documentContent");
       if (Buffer.byteLength(input.documentContent) > MAX_DOCUMENT_BYTES) throw new Error("documentContent超过2MiB上限");
       const prefix = `docs/spring-business/.staging/${run.runId}/`;
-      const documentRelativePath = `${prefix}entrypoints/${unit.id}.md`;
+      const documentRelativePath = `${prefix}entrypoints/${entryStorageKey(unit.id)}.md`;
       const root = resolve(worktree);
       const parent = await ensureSafeDirectoryChain(root, dirname(documentRelativePath).split(sep).join("/"));
-      await atomicWriteText(join(parent, `${unit.id}.md`), input.documentContent);
+      await atomicWriteText(join(parent, `${entryStorageKey(unit.id)}.md`), input.documentContent);
       const bytes = await readWorkspaceArtifact(worktree, documentRelativePath, prefix, MAX_DOCUMENT_BYTES);
       unit.documentHash = sha256([bytes]);
       unit.documentRelativePath = documentRelativePath;
@@ -1319,44 +1495,103 @@ async function commitUnit(worktree, input) {
     run.events.push({ at: nowIso(), type: "UNIT_COMMITTED", batchId: input.batchId, entryId: input.entryId, stage: committedStage, status: unit.status });
     updateCounters(run);
     const resultValue = { runId: run.runId, phase: run.phase, unit, counts: run.counts };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "UNIT_COMMIT", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
 }
 
+function assertReportAgent(kind, contextAgent) {
+  const spec = REPORT_SPECS[kind];
+  if (!spec || spec.agent !== contextAgent) {
+    diagnosticError("REPORT_AGENT_FORBIDDEN", `Agent ${contextAgent}不能处理${kind}报告`, {
+      field: "context.agent", expected: spec?.agent ?? Object.keys(REPORT_SPECS), actual: contextAgent, retryable: false,
+      nextAction: spec ? `由${spec.agent}执行并直接提交${kind}报告` : "使用TRACE/COVERAGE/BOUNDARY/INCREMENTAL/CONFIG之一",
+    });
+  }
+  return spec;
+}
+
+function reportSubmissionContext(run, kind, contextAgent, input = {}) {
+  const spec = assertReportAgent(kind, contextAgent);
+  const resultValue = {
+    schemaVersion: SCHEMA_VERSION,
+    runId: run.runId,
+    kind,
+    validator: contextAgent,
+    fingerprints: runFingerprints(run),
+    requiredChecks: spec.checks,
+    allowedDecisions: ["ACCEPTED", "REJECTED", "NEEDS_REVIEW"],
+    operationIdSuggestion: `report-${kind.toLowerCase()}-${randomUUID()}`,
+  };
+  if (kind === "CONFIG") Object.assign(resultValue, { resolutionContextHash: run.resolutionContextHash, contextIds: run.contextIds });
+  if (kind === "TRACE") {
+    const unit = Object.hasOwn(run.units, input.entryId) ? run.units[input.entryId] : null;
+    if (!unit) diagnosticError("REPORT_TRACE_ENTRY_UNKNOWN", "TRACE报告的entryId不存在", { field: "entryId", expected: Object.keys(run.units), actual: input.entryId, retryable: false, nextAction: "使用VALIDATE claim返回的entryId" });
+    if (unit.status !== "LEASED" || unit.leaseStage !== "VALIDATE" || unit.fingerprintToken !== input.batchToken) {
+      diagnosticError("REPORT_TRACE_LEASE_MISMATCH", "TRACE报告未绑定当前VALIDATE租约", {
+        field: "batchToken", expected: { entryId: unit.id, leaseStage: "VALIDATE", fingerprintToken: unit.fingerprintToken }, actual: { entryId: input.entryId, leaseStage: unit.leaseStage, batchToken: input.batchToken }, retryable: false,
+        nextAction: "重新领取VALIDATE批次，使用claim返回的entryId与fingerprintToken",
+      });
+    }
+    Object.assign(resultValue, { entryId: unit.id, traceHash: unit.artifactHash, batchToken: unit.fingerprintToken });
+  }
+  return resultValue;
+}
+
+async function getReportContext(worktree, input, contextAgent) {
+  await ensureSafeRunDirectory(worktree, input.runId, false);
+  const run = await readJson(runPaths(worktree, input.runId).state);
+  assertCurrentRun(run);
+  return reportSubmissionContext(run, input.kind, contextAgent, input);
+}
+
 async function submitReport(worktree, input, contextAgent) {
-  const spec = REPORT_SPECS[input.kind];
-  if (!spec || spec.agent !== contextAgent) throw new Error(`Agent ${contextAgent}不能提交${input.kind}报告`);
+  const spec = assertReportAgent(input.kind, contextAgent);
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, `REPORT_SUBMIT_${input.kind}`, input);
     if (replay?.result) return replay.result;
-    const report = parseStructuredJson(input.reportJson, "reportJson");
-    if (report.schemaVersion !== SCHEMA_VERSION || report.runId !== run.runId || report.kind !== input.kind || report.validator !== contextAgent || report.decision !== "ACCEPTED") {
-      throw new Error("报告版本、runId、kind、validator或decision不匹配");
+    // Public tool execution always injects freshly recomputed fingerprints.
+    // The conditional keeps the exported pure helper usable by deterministic tests.
+    if (input.configHash !== undefined) await requireFreshFingerprints(run, input, paths, `REPORT_SUBMIT_${input.kind}_FINGERPRINT_MISMATCH`);
+    const report = parseStructuredInput(input.report, "report", "object");
+    validateBoundMetadata(report, "schemaVersion", SCHEMA_VERSION, "独立报告", "REPORT_SCHEMA_VERSION_MISMATCH");
+    validateBoundMetadata(report, "runId", run.runId, "独立报告", "REPORT_RUN_ID_MISMATCH");
+    validateBoundMetadata(report, "kind", input.kind, "独立报告", "REPORT_KIND_MISMATCH");
+    validateBoundMetadata(report, "validator", contextAgent, "独立报告", "REPORT_VALIDATOR_MISMATCH");
+    if (report.fingerprints !== undefined) assertFingerprintObject(report.fingerprints, run, "独立报告");
+    Object.assign(report, { schemaVersion: SCHEMA_VERSION, runId: run.runId, kind: input.kind, validator: contextAgent, fingerprints: runFingerprints(run) });
+    if (!new Set(["ACCEPTED", "REJECTED", "NEEDS_REVIEW"]).has(report.decision)) {
+      diagnosticError("REPORT_DECISION_INVALID", "独立报告decision非法", { field: "decision", expected: ["ACCEPTED", "REJECTED", "NEEDS_REVIEW"], actual: report.decision, retryable: true, nextAction: "全部必需check通过才用ACCEPTED；证据确认失败用REJECTED；证据不足用NEEDS_REVIEW" });
     }
-    assertFingerprintObject(report.fingerprints, run, "独立报告");
-    assertPassedChecks(report.checks, "独立报告");
-    const codes = new Set(report.checks.map((check) => check.code));
-    if (spec.checks.some((code) => !codes.has(code))) throw new Error(`报告缺少必需check：${spec.checks.filter((code) => !codes.has(code)).join(",")}`);
-    if (report.checks.some((check) => check.evidence.length === 0)) throw new Error("独立报告的evidence不能为空");
-    if (input.kind === "CONFIG") {
-      if (!Array.isArray(report.resolutionLog) || report.resolutionLog.length === 0) throw new Error("CONFIG报告缺少resolutionLog");
-    } else {
-      assertCompleteQueryLog(report.queryLog, run, "独立报告");
+    assertReportChecks(report.checks, "独立报告", spec, report.decision);
+    if (report.decision === "ACCEPTED") {
+      if (input.kind === "CONFIG") {
+        if (!Array.isArray(report.resolutionLog) || report.resolutionLog.length === 0) throw new Error("[REPORT_CONFIG_RESOLUTION_LOG_EMPTY] CONFIG的ACCEPTED报告必须包含非空resolutionLog；nextAction=重新调用spring_config_resolve并记录上下文解析证据");
+      } else {
+        assertCompleteQueryLog(report.queryLog, run, "独立报告");
+      }
     }
     if (input.kind === "TRACE") {
       const unit = Object.hasOwn(run.units, input.entryId) ? run.units[input.entryId] : null;
       if (!unit || unit.status !== "LEASED" || unit.leaseStage !== "VALIDATE" || unit.fingerprintToken !== input.batchToken) {
-        throw new Error("TRACE报告没有绑定当前VALIDATE租约");
+        diagnosticError("REPORT_TRACE_LEASE_MISMATCH", "TRACE报告没有绑定当前VALIDATE租约", { field: "entryId,batchToken", expected: unit ? { entryId: unit.id, batchToken: unit.fingerprintToken, leaseStage: unit.leaseStage } : "existing entry", actual: { entryId: input.entryId, batchToken: input.batchToken }, retryable: false, nextAction: "重新领取VALIDATE租约并调用spring_report_context" });
       }
-      if (report.entryId !== unit.id || report.traceHash !== unit.artifactHash) throw new Error("TRACE报告未绑定当前trace工件");
+      validateBoundMetadata(report, "entryId", unit.id, "TRACE报告", "REPORT_TRACE_ENTRY_MISMATCH");
+      validateBoundMetadata(report, "traceHash", unit.artifactHash, "TRACE报告", "REPORT_TRACE_HASH_MISMATCH");
+      report.entryId = unit.id;
+      report.traceHash = unit.artifactHash;
     }
-    if (input.kind === "BOUNDARY" && (!Array.isArray(report.verifiedBoundaryIds) || new Set(report.verifiedBoundaryIds).size !== report.verifiedBoundaryIds.length)) throw new Error("BOUNDARY报告缺少唯一verifiedBoundaryIds集合");
-    if (input.kind === "INCREMENTAL" && ["changedServices", "reusableEntryIds", "affectedEntryIds", "newEntryIds", "tombstonedEntryIds", "workQueueEntryIds"].some((key) => !Array.isArray(report[key]))) throw new Error("INCREMENTAL报告缺少闭合集合");
-    if (input.kind === "CONFIG" && (report.resolutionContextHash !== run.resolutionContextHash || canonicalJson(report.contextIds) !== canonicalJson(run.contextIds))) throw new Error("CONFIG报告未绑定当前解析上下文");
+    if (report.decision === "ACCEPTED" && input.kind === "BOUNDARY" && (!Array.isArray(report.verifiedBoundaryIds) || new Set(report.verifiedBoundaryIds).size !== report.verifiedBoundaryIds.length)) throw new Error("[REPORT_BOUNDARY_IDS_INVALID] BOUNDARY的ACCEPTED报告必须包含唯一verifiedBoundaryIds数组；nextAction=输出经双侧证据确认的稳定边界ID，无边界时使用[]");
+    if (report.decision === "ACCEPTED" && input.kind === "INCREMENTAL" && ["changedServices", "reusableEntryIds", "affectedEntryIds", "newEntryIds", "tombstonedEntryIds", "workQueueEntryIds"].some((key) => !Array.isArray(report[key]))) throw new Error("[REPORT_INCREMENTAL_SET_MISSING] INCREMENTAL的ACCEPTED报告缺少闭合集合；nextAction=填充changedServices/reusableEntryIds/affectedEntryIds/newEntryIds/tombstonedEntryIds/workQueueEntryIds六个数组");
+    if (input.kind === "CONFIG") {
+      validateBoundMetadata(report, "resolutionContextHash", run.resolutionContextHash, "CONFIG报告", "REPORT_CONFIG_CONTEXT_HASH_MISMATCH");
+      validateBoundMetadata(report, "contextIds", run.contextIds, "CONFIG报告", "REPORT_CONFIG_CONTEXT_IDS_MISMATCH");
+      report.resolutionContextHash = run.resolutionContextHash;
+      report.contextIds = run.contextIds;
+    }
     const reportId = `report-${input.kind.toLowerCase()}-${randomUUID()}`;
     const stored = {
       id: reportId,
@@ -1371,8 +1606,8 @@ async function submitReport(worktree, input, contextAgent) {
     };
     run.reports[reportId] = stored;
     run.events.push({ at: nowIso(), type: "REPORT_SUBMITTED", reportId, kind: input.kind, agent: contextAgent });
-    const resultValue = { reportId, hash: stored.hash, kind: input.kind };
-    recordOperation(run, input, replay?.digest, resultValue);
+    const resultValue = { reportId, hash: stored.hash, kind: input.kind, decision: report.decision, accepted: report.decision === "ACCEPTED", nextAction: report.decision === "ACCEPTED" ? "使用reportId继续状态转移" : "不得转为VERIFIED/COMPLETE；按检查证据提交BLOCKED/RETRYABLE_FAILED或PARTIAL" };
+    recordOperation(run, `REPORT_SUBMIT_${input.kind}`, input, replay?.digest, resultValue);
     updateCounters(run);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1383,7 +1618,7 @@ async function closeBatch(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "BATCH_CLOSE", input);
     if (replay?.result) return replay.result;
     const batch = run.batches[input.batchId];
     if (!batch || batch.token !== input.batchToken) throw new Error("批次不存在或token不匹配");
@@ -1398,7 +1633,7 @@ async function closeBatch(worktree, input) {
     run.events.push({ at: nowIso(), type: "BATCH_CLOSED", batchId: batch.id });
     updateCounters(run);
     const resultValue = { runId: run.runId, batchId: batch.id, status: batch.status, phase: run.phase };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "BATCH_CLOSE", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1409,7 +1644,7 @@ async function heartbeatBatch(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "BATCH_HEARTBEAT", input);
     if (replay?.result) return replay.result;
     const batch = run.batches[input.batchId];
     if (!batch || batch.status !== "OPEN" || batch.token !== input.batchToken || batch.workerId !== input.workerId) throw new Error("不能续租非当前OPEN批次");
@@ -1424,7 +1659,7 @@ async function heartbeatBatch(worktree, input) {
       }
     }
     const resultValue = { runId: run.runId, batchId: batch.id, extended, leaseUntil };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "BATCH_HEARTBEAT", input, replay?.digest, resultValue);
     run.events.push({ at: nowIso(), type: "BATCH_HEARTBEAT", batchId: batch.id, extended });
     updateCounters(run);
     await atomicWriteJson(paths.state, run);
@@ -1436,12 +1671,12 @@ async function recoverRun(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "RUN_RECOVER", input);
     if (replay?.result) return replay.result;
     if (run.phase === "FINALIZING") {
       await finalizeSnapshot(worktree, run, paths);
       const resultValue = { runId: run.runId, phase: run.phase, finalized: true };
-      recordOperation(run, input, replay?.digest, resultValue);
+      recordOperation(run, "RUN_RECOVER", input, replay?.digest, resultValue);
       await atomicWriteJson(paths.state, run);
       return resultValue;
     }
@@ -1454,7 +1689,7 @@ async function recoverRun(worktree, input) {
       updateCounters(run);
       await atomicWriteJson(paths.state, run);
       const resultValue = { runId: run.runId, phase: run.phase, currentRecovered: true };
-      recordOperation(run, input, replay?.digest, resultValue);
+      recordOperation(run, "RUN_RECOVER", input, replay?.digest, resultValue);
       await atomicWriteJson(paths.state, run);
       return resultValue;
     }
@@ -1474,7 +1709,7 @@ async function recoverRun(worktree, input) {
     run.events.push({ at: nowIso(), type: "RUN_RECOVERED", recovered, recoveredDiscovery, closedBatches });
     updateCounters(run);
     const resultValue = { runId: run.runId, phase: run.phase, recovered, recoveredDiscovery, closedBatches };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "RUN_RECOVER", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1484,7 +1719,7 @@ async function seedIncrementalRun(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "INCREMENTAL_SEED", input);
     if (replay?.result) return replay.result;
     if (run.phase !== "PLANNED" || run.mode !== "INCREMENTAL" || !run.baseRunId) throw new Error("只有已规划的INCREMENTAL run可以seed");
     await requireFreshFingerprints(run, input, paths, "INCREMENTAL_SEED_FINGERPRINT_MISMATCH");
@@ -1596,7 +1831,7 @@ async function seedIncrementalRun(worktree, input) {
     run.events.push({ at: nowIso(), type: "INCREMENTAL_SEEDED", baseRunId: base.runId, reusable: reusable.length, affectedExisting: affectedExisting.length, newEntries: newEntryIds.length, changedServices, changedSharedModules, changedConfigKeys });
     updateCounters(run);
     const resultValue = { runId: run.runId, baseRunId: base.runId, changedServices, changedSharedModules, changedConfigKeys, reusableEntryIds: reusable, affectedEntryIds: affectedExisting, newEntryIds, tombstonedEntryIds, workQueueEntryIds };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "INCREMENTAL_SEED", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1606,7 +1841,8 @@ async function loadUnitTrace(worktree, run, unit) {
   const sourceRunId = unit.reusedFromRunId ?? run.runId;
   await ensureSafeRunDirectory(worktree, sourceRunId, false);
   const sourcePaths = runPaths(worktree, sourceRunId);
-  if (typeof unit.traceArtifactPath !== "string" || !unit.traceArtifactPath.startsWith(`artifacts/${unit.id}/`)) throw new Error(`入口${unit.id}缺少安全trace工件路径`);
+  const safePrefix = `artifacts/${entryStorageKey(unit.id)}/`;
+  if (typeof unit.traceArtifactPath !== "string" || !unit.traceArtifactPath.startsWith(safePrefix)) throw new Error(`入口${unit.id}缺少安全trace工件路径`);
   const path = resolve(sourcePaths.directory, unit.traceArtifactPath);
   if (!path.startsWith(sourcePaths.directory + sep)) throw new Error("trace工件越出run目录");
   const bytes = await readRegularFile(path, MAX_STRUCTURED_INPUT_BYTES);
@@ -1646,7 +1882,7 @@ async function buildGraphSnapshot(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, "GRAPH_BUILD", input);
     if (replay?.result) return replay.result;
     await requireFreshFingerprints(run, input, paths, "GRAPH_BUILD_FINGERPRINT_MISMATCH");
     if (Object.values(run.batches).some((batch) => batch.status === "OPEN")) throw new Error("存在未关闭批次，不能构建图快照");
@@ -1741,7 +1977,7 @@ async function buildGraphSnapshot(worktree, input) {
     run.events.push({ at: nowIso(), type: "GRAPH_BUILT", graphHash, nodes: nodeRows.length, edges: edgeRows.length });
     updateCounters(run);
     const resultValue = { runId: run.runId, graphHash, topologyRootHash: topologyMeta.topologyRootHash, nodeCount: nodeRows.length, edgeCount: edgeRows.length, topologyNodeCount: topologyMeta.nodeCount, topologyEdgeCount: topologyMeta.edgeCount, graphDirectory };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, "GRAPH_BUILD", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1969,7 +2205,7 @@ async function verifyStagedGraph(worktree, run) {
 
 async function verifyDocumentsAtPrefix(worktree, run, prefix) {
   for (const unit of Object.values(run.units)) {
-    const bytes = await readWorkspaceArtifact(worktree, `${prefix}entrypoints/${unit.id}.md`, prefix, MAX_DOCUMENT_BYTES);
+    const bytes = await readWorkspaceArtifact(worktree, `${prefix}entrypoints/${entryDocumentFileName(unit)}`, prefix, MAX_DOCUMENT_BYTES);
     if (sha256([bytes]) !== unit.documentHash) throw new Error(`入口${unit.id}发布文档哈希不匹配`);
   }
 }
@@ -2010,7 +2246,7 @@ async function writePublicationBundle(worktree, run) {
     contexts: run.resolutionSummary?.contexts?.map((context) => ({ id: context.id, activeProfiles: context.activeProfiles, contextHash: context.contextHash, unresolvedCount: context.unresolved.length })) ?? [],
     services: Object.keys(run.serviceSnapshots).sort().map((id) => ({ id, root: run.serviceRoots?.[id] ?? id, sourceHash: run.serviceSnapshots[id] })),
     sharedModules: Object.keys(run.sharedModuleSnapshots ?? {}).sort().map((id) => ({ id, root: run.sharedModuleRoots?.[id] ?? id, sourceHash: run.sharedModuleSnapshots[id] })),
-    entrypoints: Object.values(run.units).sort((a, b) => a.id.localeCompare(b.id)).map((unit) => ({ id: unit.id, service: unit.service, kind: unit.kind, status: unit.status, documentHash: unit.documentHash })),
+    entrypoints: Object.values(run.units).sort((a, b) => a.id.localeCompare(b.id)).map((unit) => ({ id: unit.id, service: unit.service, kind: unit.kind, status: unit.status, documentHash: unit.documentHash, documentPath: `entrypoints/${entryDocumentFileName(unit)}` })),
     tables: [...tableMap.values()].sort((a, b) => a.name.localeCompare(b.name)),
     boundaries: boundaries.sort((a, b) => a.id.localeCompare(b.id)),
     codeGraphTools: [...tools].sort(),
@@ -2033,7 +2269,7 @@ async function writePublicationBundle(worktree, run) {
     "",
     "## 入口",
     "",
-    ...manifest.entrypoints.map((entry) => `- [${escapeMarkdown(entry.id)}](entrypoints/${encodeURIComponent(entry.id)}.md) — ${escapeMarkdown(entry.kind)} / ${escapeMarkdown(entry.service)}`),
+    ...manifest.entrypoints.map((entry) => `- [${escapeMarkdown(entry.id)}](${entry.documentPath}) — ${escapeMarkdown(entry.kind)} / ${escapeMarkdown(entry.service)}`),
     "",
   ];
   await atomicWriteText(join(stage, "index.md"), `${lines.join("\n")}\n`);
@@ -2114,7 +2350,7 @@ async function controlRun(worktree, input) {
   return withRunLock(worktree, input.runId, async (paths) => {
     const run = await readJson(paths.state);
     assertCurrentRun(run);
-    const replay = operationReplay(run, input);
+    const replay = operationReplay(run, `RUN_CONTROL_${action}`, input);
     if (replay?.result) return replay.result;
     if (new Set(["COMPLETE", "PARTIAL", "FAILED", "STALE"]).has(run.phase)) {
       throw new Error(`终态运行不可控制：${run.phase}`);
@@ -2172,7 +2408,7 @@ async function controlRun(worktree, input) {
       await atomicWriteJson(paths.state, run);
       await finalizeSnapshot(worktree, run, paths);
       const resultValue = { runId: run.runId, phase: run.phase, graphHash: run.graphHash, snapshot: run.snapshotRelativePath };
-      recordOperation(run, input, replay?.digest, resultValue);
+      recordOperation(run, `RUN_CONTROL_${action}`, input, replay?.digest, resultValue);
       await atomicWriteJson(paths.state, run);
       return resultValue;
     } else if (action === "PARTIAL") {
@@ -2194,7 +2430,7 @@ async function controlRun(worktree, input) {
     run.events.push({ at: nowIso(), type: `RUN_${action}` });
     updateCounters(run);
     const resultValue = { runId: run.runId, phase: run.phase, counts: run.counts };
-    recordOperation(run, input, replay?.digest, resultValue);
+    recordOperation(run, `RUN_CONTROL_${action}`, input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -2204,138 +2440,17 @@ async function statusRun(worktree, runId) {
   await ensureSafeRunDirectory(worktree, runId, false);
   const paths = runPaths(worktree, runId);
   const run = await readJson(paths.state);
+  assertCurrentRun(run);
   updateCounters(run);
-  return { ...run, legacyReadOnly: run.schemaVersion !== SCHEMA_VERSION, fullRebaseRequired: run.schemaVersion !== SCHEMA_VERSION };
-}
-
-async function migrateConfiguration(worktree, input = {}) {
-  const root = resolve(worktree);
-  await ensureSafeCacheBase(root);
-  const lock = await acquireLock(join(root, ".opencode/.cache/spring-business-tracer/.migration.lock"));
-  try {
-    const configPath = join(root, ".opencode/spring-business-tracer.json");
-    const current = await readJson(configPath);
-    if (current.version === TOOLKIT_VERSION) {
-      for (const legacyVersion of ["1.5.0", "1.0.0", "0.5.0"]) {
-        const backupName = `.opencode/spring-business-tracer.v${legacyVersion.replace(/\.0$/, "")}.json`;
-        try {
-          const backup = await readJson(join(root, backupName));
-          const journalPath = join(root, `.opencode/.cache/spring-business-tracer/migration-${legacyVersion}-to-${TOOLKIT_VERSION}.json`);
-          const expected = { oldHash: sha256([canonicalJson(backup)]), newHash: sha256([canonicalJson(current)]) };
-          let journal = null;
-          try { journal = await readJson(journalPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-          if (journal && (journal.from !== legacyVersion || journal.to !== TOOLKIT_VERSION || journal.oldHash !== expected.oldHash || journal.newHash !== expected.newHash)) throw new Error("迁移journal与实际备份/配置哈希不一致");
-          if (!journal || journal.state === "PREPARED") {
-            if (input.apply !== true) return { status: "RECOVERY_REQUIRED", from: legacyVersion, to: TOOLKIT_VERSION, changed: false };
-            await atomicWriteJson(journalPath, { schemaVersion: SCHEMA_VERSION, from: legacyVersion, to: TOOLKIT_VERSION, ...expected, legacyRuns: "LEGACY_READ_ONLY/FULL_REBASE_REQUIRED", state: "APPLIED", recoveredAt: nowIso() });
-            return { status: "RECOVERED", from: legacyVersion, to: TOOLKIT_VERSION, changed: false, backup: backupName };
-          }
-          if (journal.state !== "APPLIED") throw new Error(`迁移journal状态非法：${journal.state}`);
-          return { status: "NOOP", from: TOOLKIT_VERSION, to: TOOLKIT_VERSION, changed: false };
-        } catch (error) {
-          if (error?.code !== "ENOENT") throw error;
-        }
-      }
-      return { status: "NOOP", from: TOOLKIT_VERSION, to: TOOLKIT_VERSION, changed: false };
-    }
-    if (!new Set(["0.5.0", "1.0.0", "1.5.0"]).has(current.version)) throw new Error(`不支持的配置迁移版本：${current.version}`);
-    const requiredObjects = ["workspace", "output", "codeGraph", "analysis", "entrypoints", "crossService", "batching", "resume", "verification"];
-    if (current.language !== "java" || requiredObjects.some((key) => !current[key] || typeof current[key] !== "object" || Array.isArray(current[key])) ||
-        current.codeGraph.allowNativeCallGraphFallback !== false || current.codeGraph.allowTextSearchCallGraphFallback !== false ||
-        current.crossService.requireTwoSidedEvidence !== true || current.verification.publishOnlyVerified !== true) {
-      throw new Error("旧配置缺少必需字段或违反安全不变量，拒绝迁移");
-    }
-    const enabled = current.entrypoints?.enabledAdapters ?? [];
-    const maxBranches = current.analysis?.maxBranches;
-    if (!Array.isArray(enabled) || !Array.isArray(current.workspace.services) || !Array.isArray(current.verification.validators) ||
-        !Number.isInteger(maxBranches) || maxBranches < 1 || maxBranches >= 1000 ||
-        !Number.isInteger(current.batching.batchSize) || current.batching.batchSize < 1 || current.batching.batchSize > 100 ||
-        !Number.isInteger(current.batching.leaseSeconds) || current.batching.leaseSeconds < 30 ||
-        !Number.isInteger(current.batching.retryLimit) || current.batching.retryLimit < 0 || current.batching.retryLimit > 10 ||
-        current.output.directory !== "docs/spring-business" || current.resume.stateDirectory !== CACHE_RELATIVE) {
-      throw new Error("旧配置字段类型或范围非法，拒绝迁移");
-    }
-    const verifiedMap = {
-      SPRING_MVC: "SPRING_MVC", SPRING_WEBFLUX: "SPRING_WEBFLUX_ANNOTATED", KAFKA: "KAFKA_LISTENER", RABBIT: "RABBIT_LISTENER",
-      JMS: "JMS_STATIC_LISTENER", SCHEDULED: "SCHEDULED", QUARTZ: "QUARTZ_STATIC_JOB_TRIGGER", SPRING_EVENT: "SPRING_EVENT",
-      GRPC: "GRPC_UNARY_PROTO", GRAPHQL: "GRAPHQL_ANNOTATED_ROOT", APPLICATION_RUNNER: "APPLICATION_RUNNER",
-    };
-    const verified = [...new Set(enabled.map((name) => verifiedMap[name]).filter(Boolean))];
-    const migrated = {
-      ...current,
-      version: TOOLKIT_VERSION,
-      workspace: {
-        ...current.workspace,
-        sharedModules: [],
-        services: (current.workspace?.services ?? []).map((service) => ({
-          ...service,
-          codeGraphProjectPath: service.codeGraphProjectPath ?? service.root,
-          packages: service.packages ?? [],
-          aliases: service.aliases ?? [service.id],
-        })),
-      },
-      codeGraph: { ...current.codeGraph, queryLimit: maxBranches + 1, requireCompleteStatus: true },
-      analysisContexts: { defaultContext: "default", definitions: [{ id: "default", activeProfiles: ["default"], propertySources: [], optionalSources: true }] },
-      configResolution: { externalSourcePolicy: "PARTIAL", environmentPolicy: "DENY", secretPolicy: "HASH_ONLY", executeSpel: false, maxSourceBytes: 1048576, maxTotalBytes: 8388608 },
-      adapterRegistry: { builtInVersion: TOOLKIT_VERSION, allowScripts: false, customDefinitions: [] },
-      entrypoints: { ...current.entrypoints, verifiedAdapters: verified, experimentalAdapters: enabled.filter((name) => !verifiedMap[name]) },
-      crossService: { ...current.crossService, verifiedKinds: ["FEIGN_HTTP", "REST_TEMPLATE_HTTP", "WEBCLIENT_HTTP", "GATEWAY_HTTP", "RABBIT", "KAFKA", "JMS", "GRPC", "SPRING_EVENT"], kafka: { requireClusterAlias: true, consumerGroupSemantics: true, dynamicDestinationPolicy: "PARTIAL" } },
-      persistence: { verifiedAdapters: ["JPA", "MYBATIS_XML", "MYBATIS_ANNOTATION", "JDBC_TEMPLATE"], dynamicIdentifierPolicy: "PARTIAL" },
-      incremental: { enabled: true, strategy: "SERVICE_CLOSURE", requireFullEntryRediscovery: true, legacyBaselinePolicy: "FULL_REBASE" },
-      publication: { stagingDirectory: "docs/spring-business/.staging", snapshotDirectory: "docs/spring-business/snapshots", currentPointer: "docs/spring-business/current.json", writeIndex: true, writeManifest: true },
-      graph: { formatVersion: 2, sharded: true, shardPrefixLength: 2, diffEnabled: true, pathQueryMaxDepth: 20, pathQueryMaxResults: 100, recordTombstones: true, cursorBoundToSnapshot: true, queryWallClockMs: 2000, maxShardBytes: 8388608 },
-      batching: { ...current.batching, discoveryLeaseSeconds: current.batching.leaseSeconds, heartbeatSeconds: 120, checkpointAfterEachServiceDiscovery: true, requireClose: true, operationJournalLimit: 2000 },
-      resume: { ...current.resume, requireToolkitFingerprint: true },
-      verification: { ...current.verification, validators: [...new Set([...(current.verification.validators ?? []), "incremental", "config"])] },
-    };
-    assertConfigurationSemantics(migrated);
-    if (!Number.isInteger(migrated.codeGraph.queryLimit) || migrated.codeGraph.queryLimit < 2 || migrated.codeGraph.queryLimit > 1000 || migrated.incremental.strategy !== "SERVICE_CLOSURE" ||
-        !migrated.verification.validators.includes("incremental") || !migrated.verification.validators.includes("config") || migrated.resume.requireToolkitFingerprint !== true || migrated.graph.formatVersion !== 2) {
-      throw new Error("V2.0迁移结果未通过安全不变量校验");
-    }
-    const report = {
-      schemaVersion: SCHEMA_VERSION,
-      from: current.version,
-      to: TOOLKIT_VERSION,
-      oldHash: sha256([canonicalJson(current)]),
-      newHash: sha256([canonicalJson(migrated)]),
-      legacyRuns: "LEGACY_READ_ONLY/FULL_REBASE_REQUIRED",
-    };
-    if (input.apply !== true) return { status: "DRY_RUN", changed: true, migrated, report };
-    const backupName = `.opencode/spring-business-tracer.v${current.version.replace(/\.0$/, "")}.json`;
-    const backupPath = join(root, backupName);
-    try {
-      const backup = await readJson(backupPath);
-      if (canonicalJson(backup) !== canonicalJson(current)) throw new Error("现有旧版备份与待迁移配置不一致");
-    } catch (error) {
-      if (error?.code === "ENOENT") await atomicWriteJson(backupPath, current);
-      else throw error;
-    }
-    const journalPath = join(root, `.opencode/.cache/spring-business-tracer/migration-${current.version}-to-${TOOLKIT_VERSION}.json`);
-    try {
-      const existingJournal = await readJson(journalPath);
-      if (existingJournal.oldHash !== report.oldHash || existingJournal.newHash !== report.newHash || !new Set(["PREPARED", "APPLIED"]).has(existingJournal.state)) throw new Error("现有迁移journal与待迁移内容不一致");
-    } catch (error) {
-      if (error?.code === "ENOENT") await atomicWriteJson(journalPath, { ...report, state: "PREPARED", preparedAt: nowIso() });
-      else throw error;
-    }
-    await atomicWriteJson(configPath, migrated);
-    await atomicWriteJson(journalPath, { ...report, state: "APPLIED", appliedAt: nowIso() });
-    return { status: "APPLIED", changed: true, backup: backupName, report };
-  } finally {
-    await lock.handle.close();
-    try {
-      const owner = await readJson(join(root, ".opencode/.cache/spring-business-tracer/.migration.lock"));
-      if (owner.token === lock.token) await unlink(join(root, ".opencode/.cache/spring-business-tracer/.migration.lock"));
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
+  return run;
 }
 
 function result(value) {
   return JSON.stringify(value, null, 2);
 }
+
+const STRUCTURED_OBJECT_SCHEMA = tool.schema.record(tool.schema.string(), tool.schema.any());
+const STRUCTURED_ARRAY_SCHEMA = tool.schema.array(tool.schema.any());
 
 const SpringBusinessStatePlugin = async () => ({
   tool: {
@@ -2362,7 +2477,7 @@ const SpringBusinessStatePlugin = async () => ({
       },
     }),
     spring_state_init: tool({
-      description: "幂等创建V2.0 FULL或INCREMENTAL运行；旧版run保持只读",
+      description: "幂等创建V2.0 FULL或INCREMENTAL运行",
       args: {
         runId: tool.schema.string(),
         operationId: tool.schema.string(),
@@ -2394,7 +2509,7 @@ const SpringBusinessStatePlugin = async () => ({
       },
     }),
     spring_discovery_commit: tool({
-      description: "入口Worker原子提交单个服务的结构化清单；插件重算总数和adapter计数并校验Code Graph完整查询",
+      description: "入口Worker原子提交单个服务清单；使用结构化inventory，头信息/六指纹由插件自动绑定",
       args: {
         runId: tool.schema.string(),
         serviceId: tool.schema.string(),
@@ -2402,11 +2517,12 @@ const SpringBusinessStatePlugin = async () => ({
         leaseToken: tool.schema.string(),
         operationId: tool.schema.string(),
         status: tool.schema.enum(["COMPLETE", "RETRYABLE_FAILED", "FAILED"]),
-        inventoryJson: tool.schema.string().optional(),
+        inventory: STRUCTURED_OBJECT_SCHEMA.optional(),
         errorCode: tool.schema.string().optional(),
       },
       async execute(args, context) {
-        return result(await commitDiscovery(context.worktree, args, context.agent));
+        const fingerprints = await computeWorkspaceFingerprints(context.worktree);
+        return result(await commitDiscovery(context.worktree, { ...args, ...fingerprints }, context.agent));
       },
     }),
     spring_discovery_status: tool({
@@ -2418,10 +2534,10 @@ const SpringBusinessStatePlugin = async () => ({
       },
     }),
     spring_state_plan: tool({
-      description: "从已checkpoint的逐服务入口清单冻结分析单元；未使用发现租约时兼容显式entriesJson",
+      description: "从已checkpoint的逐服务入口清单冻结分析单元；完整发现流程不传entries，无发现checkpoint时传结构化entries数组",
       args: {
         runId: tool.schema.string(),
-        entriesJson: tool.schema.string().optional(),
+        entries: STRUCTURED_ARRAY_SCHEMA.optional(),
         operationId: tool.schema.string(),
       },
       async execute(args, context) {
@@ -2455,7 +2571,7 @@ const SpringBusinessStatePlugin = async () => ({
         batchId: tool.schema.string(),
         fingerprintToken: tool.schema.string(),
         status: tool.schema.enum(["TRACED", "VERIFIED", "PUBLISHED", "RETRYABLE_FAILED", "BLOCKED", "FAILED"]),
-        traceResultJson: tool.schema.string().optional(),
+        traceResult: STRUCTURED_OBJECT_SCHEMA.optional(),
         reportId: tool.schema.string().optional(),
         documentContent: tool.schema.string().optional(),
         errorCode: tool.schema.string().optional(),
@@ -2492,22 +2608,35 @@ const SpringBusinessStatePlugin = async () => ({
         return result(await recoverRun(context.worktree, { ...args, ...fingerprints }));
       },
     }),
+    spring_report_context: tool({
+      description: "Validator/Auditor提交前读取插件生成的报告头、六指纹、requiredChecks和TRACE租约绑定；不要猜测这些字段",
+      args: {
+        runId: tool.schema.string(),
+        kind: tool.schema.enum(["TRACE", "COVERAGE", "BOUNDARY", "INCREMENTAL", "CONFIG"]),
+        entryId: tool.schema.string().optional(),
+        batchToken: tool.schema.string().optional(),
+      },
+      async execute(args, context) {
+        return result(await getReportContext(context.worktree, args, context.agent));
+      },
+    }),
     spring_report_submit: tool({
-      description: "由受限Validator/Auditor直接提交带Agent身份、必需checks和非空证据的认证报告",
+      description: "由受限Validator/Auditor提交结构化report；允许ACCEPTED/REJECTED/NEEDS_REVIEW，头信息由插件自动绑定",
       args: {
         runId: tool.schema.string(),
         kind: tool.schema.enum(["TRACE", "COVERAGE", "BOUNDARY", "INCREMENTAL", "CONFIG"]),
         operationId: tool.schema.string(),
         entryId: tool.schema.string().optional(),
         batchToken: tool.schema.string().optional(),
-        reportJson: tool.schema.string(),
+        report: STRUCTURED_OBJECT_SCHEMA,
       },
       async execute(args, context) {
-        return result(await submitReport(context.worktree, args, context.agent));
+        const fingerprints = await computeWorkspaceFingerprints(context.worktree);
+        return result(await submitReport(context.worktree, { ...args, ...fingerprints }, context.agent));
       },
     }),
     spring_state_seed: tool({
-      description: "用同版COMPLETE baseline按逐服务闭包保守复用并记录入口tombstone；旧版禁止seed",
+      description: "用V2 COMPLETE baseline按逐服务闭包保守复用并记录入口tombstone",
       args: { runId: tool.schema.string(), reportId: tool.schema.string(), operationId: tool.schema.string() },
       async execute(args, context) {
         assertPrimary(context);
@@ -2579,14 +2708,6 @@ const SpringBusinessStatePlugin = async () => ({
         return result(await diffGraphSnapshots(context.worktree, args));
       },
     }),
-    spring_migrate_config: tool({
-      description: "dry-run或原子迁移V0.5/V1.0/V1.5配置到V2.0；旧run保持只读且要求FULL_REBASE",
-      args: { apply: tool.schema.boolean().optional() },
-      async execute(args, context) {
-        assertPrimary(context);
-        return result(await migrateConfiguration(context.worktree, args));
-      },
-    }),
     spring_state_control: tool({
       description: "幂等暂停、恢复、原子完成快照、标记PARTIAL或FAIL",
       args: {
@@ -2606,7 +2727,7 @@ const SpringBusinessStatePlugin = async () => ({
       },
     }),
     spring_state_status: tool({
-      description: "读取V2.0运行；旧版run仅显示LEGACY_READ_ONLY/FULL_REBASE_REQUIRED",
+      description: "读取V2.0运行状态；不支持其他schemaVersion",
       args: { runId: tool.schema.string() },
       async execute(args, context) {
         assertPrimary(context);
@@ -2618,8 +2739,8 @@ const SpringBusinessStatePlugin = async () => ({
 
 Object.defineProperty(SpringBusinessStatePlugin, "__test", {
   value: Object.freeze({
-    buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints, runCodeGraphQuery, summarizeWorkspaceFingerprints,
-    claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, migrateConfiguration, planRun,
+    buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints, runCodeGraphQuery, summarizeWorkspaceFingerprints, entryStorageKey, getReportContext,
+    claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, planRun,
     assertSafeConfigAgent, queryGraphSnapshot, queryTopologySnapshot, recoverRun, resolveTrustedGraph, seedIncrementalRun, statusRun, submitReport,
     assertConfigurationSemantics, recoverExpiredDiscoveryLeases,
   }),

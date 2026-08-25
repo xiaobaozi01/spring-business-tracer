@@ -1,4 +1,4 @@
-# V2.0 Code Graph 契约回放（兼容旧回归夹具）
+# V2.0 Code Graph 契约回放（历史Java夹具）
 
 契约回放用于在没有真实 Code Graph MCP 的测试环境中验证 Agent 工作流。
 

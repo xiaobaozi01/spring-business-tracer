@@ -40,7 +40,6 @@ const samples = {
   "resolved-config": { schemaVersion: "2.0", defaultContext: "prod-cn", contexts: [{ id: "prod-cn", activeProfiles: ["prod"], values: [], unresolved: [], origins: [], contextHash: hash }], externalSourcePolicy: "PARTIAL", secretPolicy: "HASH_ONLY", resolutionContextHash: hash },
   "topology-query": { query: "node", key: "service:order", contextId: "prod-cn", limit: 50 },
   "topology-result": { schemaVersion: "2.0", runId: "run-schema", integrityModel: "SELF_CONSISTENCY_NOT_EXTERNAL_SIGNATURE", topologyRootHash: hash, queryHash: hash, returnedCount: 1, complete: true, cutoffReason: null, rows: [], cursor: null },
-  "migration-report": { schemaVersion: "2.0", from: "1.5.0", to: "2.0.0", oldHash: hash, newHash: hash, legacyRuns: "LEGACY_READ_ONLY/FULL_REBASE_REQUIRED" },
 };
 
 assert.deepEqual(Object.keys(samples).sort(), names, "每份schema都必须有合法样例");

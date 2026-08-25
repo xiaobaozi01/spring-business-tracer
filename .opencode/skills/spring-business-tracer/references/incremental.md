@@ -1,6 +1,6 @@
 # V2.0 配置依赖感知的保守增量分析
 
-增量基线必须满足：schemaVersion=2.0、phase=COMPLETE、存在 graphHash、topologyRootHash、manifestHash 与不可变快照。V0.5/V1.0/V1.5、PARTIAL、STALE 或缺少任一根的baseline均不可复用。
+增量基线必须满足：schemaVersion=2.0、phase=COMPLETE、存在 graphHash、topologyRootHash、manifestHash 与不可变快照。其他schemaVersion、PARTIAL、STALE 或缺少任一根的baseline直接拒绝。
 
 INCREMENTAL审计必须同时绑定`baseGraphHash`、`baseManifestHash`和`baseTopologyRootHash`，并通过`CONFIG_DEPENDENCY_CLOSURE`。插件会重算changedConfigKeys和各互斥集合；报告缺根、配置依赖未闭合或集合不精确时拒绝seed。
 

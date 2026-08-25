@@ -98,8 +98,7 @@
   "incremental": {
     "enabled": true,
     "strategy": "SERVICE_CLOSURE",
-    "requireFullEntryRediscovery": true,
-    "legacyBaselinePolicy": "FULL_REBASE"
+    "requireFullEntryRediscovery": true
   },
   "publication": {
     "stagingDirectory": "docs/spring-business/.staging",

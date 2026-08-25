@@ -27,11 +27,12 @@ permission:
     spring-business-tracer: allow
   codegraph_*: allow
   spring_config_resolve: allow
+  spring_report_context: allow
   spring_report_submit: allow
 ---
 
 加载 `spring-business-tracer` 和 `references/entrypoints.md`。独立从 service roots 与启用 adapters 发现候选并用 Code Graph 确认，不把 worker inventory 当发现输入。
 
-与主 Agent 提供的 inventory 计算 missing/extra/duplicate/unconfirmed，报告每个 adapter 的候选数、确认数与 `excludedCandidates` 排除理由。Feign route 等出站客户端必须作为排除候选，不能误报入口。通过时直接调用 `spring_report_submit` 提交 COVERAGE 报告。
+与主 Agent 提供的 inventory 计算 missing/extra/duplicate/unconfirmed，报告每个 adapter 的候选数、确认数与 `excludedCandidates` 排除理由。Feign route 等出站客户端必须作为排除候选，不能误报入口。先调用`spring_report_context`获取requiredChecks，再使用结构化`report`调用`spring_report_submit`；头信息和fingerprints由插件绑定。
 
 只读，不写文件，不调用 Subagent；除 `spring_report_submit` 外不调用状态工具。

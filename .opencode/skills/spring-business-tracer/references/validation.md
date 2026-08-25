@@ -60,9 +60,10 @@ BOUNDARY_AMBIGUOUS
 
 ## 判定
 
-- 全部 validator PASS：`ACCEPTED`，Validator/Auditor直接调用 `spring_report_submit`。
-- 任一 FAIL：`REJECTED`，不得发布。
-- 证据不足但不是虚假边：`NEEDS_REVIEW/PARTIAL`，保留缺口，不发布为 PASS。
+- 提交前调用`spring_report_context`，以其`requiredChecks`为完整集合；使用结构化`report`，省略由插件绑定的schemaVersion/runId/kind/validator/fingerprints。
+- 全部 validator PASS：`ACCEPTED`，可用reportId推进状态。
+- 任一 FAIL：`REJECTED`，报告会留痕但不得发布。
+- 证据不足但不是虚假边：`NEEDS_REVIEW/PARTIAL`，报告会留痕但不发布为 PASS。
 
 验证结果包含固定validator名称、独立查询或解析记录、错误码、必需checks、非空证据和全部V2指纹。TRACE报告还绑定当前VALIDATE租约令牌与实际traceHash。
 

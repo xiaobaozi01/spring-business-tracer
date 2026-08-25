@@ -9,7 +9,7 @@ SKILL = ROOT / ".opencode/skills/spring-business-tracer"
 V20 = ROOT / "tests/fixtures/v20-enterprise-system"
 V15 = ROOT / "tests/fixtures/v15-business-system"
 V10 = ROOT / "tests/fixtures/v05-commerce-system"
-COMMANDS = {"spring-doctor", "spring-trace", "spring-scan", "spring-update", "spring-migrate", "spring-pause", "spring-resume", "spring-status", "spring-query", "spring-impact", "spring-diff", "spring-context", "spring-topology", "spring-explain"}
+COMMANDS = {"spring-doctor", "spring-trace", "spring-scan", "spring-update", "spring-pause", "spring-resume", "spring-status", "spring-query", "spring-impact", "spring-diff", "spring-context", "spring-topology", "spring-explain"}
 SUBAGENTS = {"spring-entry-worker", "spring-trace-worker", "spring-trace-validator", "spring-coverage-auditor", "spring-boundary-validator", "spring-incremental-validator", "spring-config-auditor"}
 
 def check(ok: bool, message: str) -> None:
@@ -84,13 +84,15 @@ def validate_structure() -> list[str]:
         check("spring_config_resolve: allow" in agent_text, f"{path.name}缺少脱敏配置解析工具")
         if path.stem != "spring-config-auditor":
             check("codegraph_*: allow" in agent_text, f"{path.name}缺少CodeGraph薄适配器权限")
+        if "spring_report_submit: allow" in agent_text:
+            check("spring_report_context: allow" in agent_text, f"{path.name}缺少报告上下文工具权限")
     opencode = shutil.which("opencode")
     if opencode:
         resolved = json.loads(run_opencode_config(opencode))
         permissions = resolved["agent"]["spring-business-orchestrator"]["permission"]
         check(permissions.get("spring_config_resolve") == "allow" and permissions.get("spring_topology_query") == "allow", "主Agent解析后权限缺少V2配置/拓扑工具")
     schemas = list((SKILL / "schemas").glob("*.schema.json"))
-    check(len(schemas) == 21, f"Schema数量应为21，实际{len(schemas)}")
+    check(len(schemas) == 20, f"Schema数量应为20，实际{len(schemas)}")
     skill = read(SKILL / "SKILL.md")
     check("version: 2.0.0" in skill and len(skill.splitlines()) < 500, "Skill版本或长度错误")
     check(".opencode/spring-business-tracer.json" in skill, "Skill未声明固定配置路径")
@@ -100,7 +102,7 @@ def validate_structure() -> list[str]:
     incremental_validator = read(ROOT / ".opencode/agents/spring-incremental-validator.md")
     check("V2基线" in incremental_validator and "V1基线" not in incremental_validator, "增量Validator描述仍引用旧版基线")
     run(["node", "tests/scripts/validate_schemas.mjs"])
-    return ["Java-only V2、1主7子Agent、14命令、21 Schema与最小权限闭合"]
+    return ["Java-only V2、1主7子Agent、13命令、20 Schema与最小权限闭合"]
 
 def validate_plugin() -> list[str]:
     plugin = read(ROOT / ".opencode/plugins/spring-business-state.js")
@@ -110,6 +112,10 @@ def validate_plugin() -> list[str]:
         check(token in plugin, f"插件缺少{token}")
     for token in ("codegraph_bounded_query", "LIMIT_REACHED", "EXPLICIT_COMPLETE", "codegraph\", command"):
         check(token in plugin, f"CodeGraph薄适配器缺少{token}")
+    for token in ("spring_report_context", "OPERATION_ID_CONFLICT", "STRUCTURED_INPUT_TYPE_MISMATCH", "REPORT_CHECKS_EMPTY", "entryStorageKey", "RUN_SCHEMA_VERSION_UNSUPPORTED", "inventory: STRUCTURED_OBJECT_SCHEMA", "entries: STRUCTURED_ARRAY_SCHEMA", "traceResult: STRUCTURED_OBJECT_SCHEMA", "report: STRUCTURED_OBJECT_SCHEMA"):
+        check(token in plugin, f"结构化提交/诊断契约缺少{token}")
+    for forbidden in ("inventoryJson", "entriesJson", "traceResultJson", "reportJson", "migrateConfiguration", "spring_migrate_config", "legacyDigest", "legacyPrefix"):
+        check(forbidden not in plugin, f"插件仍包含已删除的兼容协议：{forbidden}")
     for token in ("MAX_SOURCE_BYTES", "PLACEHOLDER_CYCLE", "SECRET_KEY", "CONFIG_SOURCE_FORBIDDEN", "maxAliasCount: 0"):
         check(token in resolver, f"配置解析器缺少{token}")
     for token in ("MESSAGE_SUBSCRIPTION", "provenance", "adjacency-out", "CURSOR_SNAPSHOT_OR_QUERY_MISMATCH", "MAX_QUERY_MS"):
@@ -117,7 +123,7 @@ def validate_plugin() -> list[str]:
     for forbidden in ("tree-sitter", "javaparser", "eclipse.jdt", "cypher"):
         check(forbidden not in (plugin + resolver + graph).lower(), f"疑似实现第二套代码图：{forbidden}")
     run(["node", "tests/scripts/test_state_plugin_v20.mjs"])
-    return ["V2动态测试覆盖嵌套placeholder、秘密脱敏、配置审计、validator provenance、配置键增量、拓扑分片、cursor和V1.5迁移"]
+    return ["V2动态测试覆盖严格结构化协议、嵌套placeholder、秘密脱敏、配置审计、validator provenance、配置键增量、拓扑分片和cursor"]
 
 def validate_fixture(required: bool) -> list[str]:
     contract = json.loads(read(V20 / "codegraph-contract.json"))
@@ -147,8 +153,8 @@ def validate_fixture(required: bool) -> list[str]:
 def validate_regressions(required: bool) -> list[str]:
     v15, _, v15_special = codegraph_contract(V15, required)
     v10, _, v10_special = codegraph_contract(V10, required)
-    check(v15 == 12 and v10 == 20 and v15_special == 2 and v10_special == 3, "V1.5/V1.0 CodeGraph回归边数变化")
-    return ["V1.5三服务12+2条与V1.0四服务20+3条真实CodeGraph Java/特殊边无退化"]
+    check(v15 == 12 and v10 == 20 and v15_special == 2 and v10_special == 3, "Java回归夹具的CodeGraph边数变化")
+    return ["两个Java回归夹具的12+2条与20+3条真实CodeGraph Java/特殊边无退化"]
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--require-codegraph", action="store_true"); args = parser.parse_args()

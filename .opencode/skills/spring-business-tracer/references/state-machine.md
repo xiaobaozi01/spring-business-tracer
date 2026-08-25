@@ -50,7 +50,7 @@ toolkitFingerprint == checkpoint.toolkitFingerprint
 - 从 `PENDING/RETRYABLE_FAILED` 继续；
 - 不重复发布相同 document hash。
 
-活动run也可能遇到并发变化。公开初始化必须显式提供`runId + operationId`；claim、close、RESUME、seed、建图、PARTIAL、COMPLETE校验全部V2指纹；commit绑定claim令牌。每个run状态写操作带operationId，重复请求返回原结果，不允许同ID换参数。
+活动run也可能遇到并发变化。公开初始化必须显式提供`runId + operationId`；claim、commit、report、close、RESUME、seed、建图、PARTIAL、COMPLETE均由插件重算V2指纹；commit绑定claim令牌。每个run状态写操作带operationId，幂等摘要包含操作类型；只有完全相同的重试返回原结果，参数或操作改变时必须换新ID。
 
 `PAUSED` 不能直接重新规划入口；终态 run 不能再提交单元、恢复或重新完成。需要重规划时创建新 run。
 

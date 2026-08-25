@@ -37,7 +37,7 @@
       "type": "object",
       "required": ["id", "service", "kind", "status", "attempts", "fingerprintToken"],
       "properties": {
-        "id": {"type": "string"},
+        "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001F\\u007F]+$"},
         "service": {"type": "string"},
         "kind": {"type": "string"},
         "status": {"enum": ["PENDING", "LEASED", "TRACED", "VERIFIED", "PUBLISHED", "REUSED", "RETRYABLE_FAILED", "BLOCKED", "FAILED", "STALE"]},

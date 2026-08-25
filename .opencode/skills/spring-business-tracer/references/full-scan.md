@@ -18,8 +18,8 @@
 
 1. Doctor步骤：检查工具、索引和全部指纹。
 2. 配置步骤：冻结analysisContexts，config auditor独立提交CONFIG报告。
-3. 发现步骤：为每个可部署服务领取独立发现租约；worker直接提交结构化inventory，插件校验查询完整性、Bean有效性和计数并落盘。共享模块不作为入口服务。
-4. `PLANNED`：所有服务checkpoint为COMPLETE且覆盖审计通过后，插件确定性合并inventory；不得由主Agent复制自然语言表格。
+3. 发现步骤：为每个可部署服务领取独立发现租约；worker使用结构化`inventory`直接提交，省略由插件绑定的版本/run/服务/指纹头；插件在提交时重算新鲜度并校验查询完整性、Bean有效性和计数。共享模块不作为入口服务。
+4. `PLANNED`：所有服务checkpoint为COMPLETE且覆盖审计通过后，插件确定性合并inventory；不传`entries`，不得由主Agent复制自然语言表格。
 5. `TRACING`：按稳定 ID 排序领取隔离批次。
 6. `VALIDATING`：每个 traced 单元由独立 validator 复查。
 7. `PUBLISHING`：只发布 verified 单元到 staging。

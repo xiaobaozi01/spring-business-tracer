@@ -32,7 +32,7 @@ npm ci
 - 入口发现先按服务租约并独立checkpoint，插件重算结构化清单数量；随后按TRACE/VALIDATE/PUBLISH三阶段租约处理。中断后只重试未完成服务/入口。
 - 配置、逐服务源码、Code Graph索引、工具包、解析上下文和adapter registry在批次边界防漂移。
 - 由7个受限Subagent独立发现、追踪、配置复算和验证；认证报告只能由对应Validator/Auditor直接提交。
-- 仅基于同版V2 COMPLETE基线，按serviceClosure、sharedModuleClosure与configDependencyIds保守增量复用；V0.5/V1.0/V1.5 baseline强制FULL_REBASE。
+- 仅基于V2 COMPLETE基线，按serviceClosure、sharedModuleClosure与configDependencyIds保守增量复用；其他schemaVersion直接拒绝。
 - 输出中文文档与V2类型化拓扑；SERVICE/ENTRY/端点/消息channel+subscription/RPC/Job/Data Resource分开建模，provenance单独分片。
 - 精确节点、邻接和解释查询只读目标shard，稳定cursor绑定topologyRootHash；完整性明确为工作区内自洽校验而非外部签名。
 - 识别Feign、RestTemplate、WebClient、Rabbit、Kafka和Spring Event双侧边界；Kafka按cluster/topic/group表达竞争消费语义。
@@ -46,7 +46,6 @@ npm ci
 /spring-trace http:POST:/api/orders
 /spring-scan --new --batch-size 10
 /spring-update --base current --batch-size 10
-/spring-migrate
 /spring-pause run-id
 /spring-resume run-id
 /spring-status run-id
@@ -90,7 +89,7 @@ Worker 不能验证自己，Validator 不能发布。主 Agent 通过状态插�
 - Code Graph 索引不会被工具包自动初始化、刷新或升级。
 - 静态functional WebFlux、JMS、Quartz、GraphQL root和gRPC unary有严格verified profile；动态router/destination/runtime wiring/streaming、Kafka Streams仍PARTIAL。
 - Path 默认 STRICT_ENTRY，避免把不同入口各自验证的边拼成虚假业务链；COMPOSED 只表示潜在静态可达。
-- 旧V0.5/V1.0/V1.5 run与snapshot保持只读，首次V2必须FULL_REBASE；禁止跨major seed和语义diff。
+- 只支持当前V2 run与snapshot；其他schemaVersion直接拒绝，禁止跨版本seed和语义diff。
 
 ## 输出与状态
 

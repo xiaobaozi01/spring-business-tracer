@@ -8,7 +8,7 @@
     "schemaVersion": {"const": "2.0"},
     "runId": {"type": "string", "minLength": 1},
     "kind": {"const": "TRACE"},
-    "entryId": {"type": "string", "minLength": 1},
+    "entryId": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001F\\u007F]+$"},
     "traceHash": {"type": "string", "minLength": 1},
     "validator": {"const": "spring-trace-validator"},
     "decision": {"enum": ["ACCEPTED", "REJECTED", "NEEDS_REVIEW"]},

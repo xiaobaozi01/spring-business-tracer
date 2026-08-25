@@ -1,6 +1,6 @@
 ---
 name: spring-business-tracer
-description: 使用已安装的Code Graph梳理Java Spring项目或多服务工作区在不同Spring Profile下的全部业务入口、服务调用、跨服务协议、数据库资源和配置依赖，生成中文文档及带provenance的可查询类型化拓扑；支持一键全量/增量扫描、暂停恢复、分批验证、分片查询、解释、影响分析与旧版本迁移。
+description: 使用已安装的Code Graph梳理Java Spring项目或多服务工作区在不同Spring Profile下的全部业务入口、服务调用、跨服务协议、数据库资源和配置依赖，生成中文文档及带provenance的可查询类型化拓扑；支持一键全量/增量扫描、暂停恢复、分批验证、分片查询、解释与影响分析。
 license: MIT
 compatibility: opencode
 metadata:
@@ -47,22 +47,18 @@ metadata:
 
 ## 增量工作流
 
-`/spring-update` 只接受V2 COMPLETE baseline。插件比较逐服务源码、逐共享模块源码与解析配置键；只有 `serviceClosure` 不触达 changedServices、`sharedModuleClosure` 不触达 changedSharedModules、`configDependencyIds` 不触达 changedConfigKeys 且没有未归属依赖才可 REUSED。旧版baseline、adapter registry或索引语义变化均FULL_REBASE。
+`/spring-update` 只接受V2 COMPLETE baseline。插件比较逐服务源码、逐共享模块源码与解析配置键；只有 `serviceClosure` 不触达 changedServices、`sharedModuleClosure` 不触达 changedSharedModules、`configDependencyIds` 不触达 changedConfigKeys 且没有未归属依赖才可 REUSED。adapter registry或索引语义变化均FULL_REBASE。
 
 详见 [增量分析](references/incremental.md)。
 
 ## 暂停、恢复和幂等
 
-状态最小单元是入口的当前阶段：`PENDING → TRACE → TRACED → VALIDATE → VERIFIED → PUBLISH → PUBLISHED`。崩溃后租约过期会回到原阶段；`operationId` 防止重复提交。PAUSE 停止新领取，close 后进入 PAUSED；RESUME/RECOVER 可恢复租约、批次和 FINALIZING 发布事务。旧 V0.5 run 只读，显示 FULL_REBASE_REQUIRED。
+状态最小单元是入口的当前阶段：`PENDING → TRACE → TRACED → VALIDATE → VERIFIED → PUBLISH → PUBLISHED`。崩溃后租约过期会回到原阶段；`operationId` 防止重复提交：完全相同的重试复用ID，参数或操作变化换新ID。提交只接受结构化`inventory/entries/traceResult/report`；版本、run/服务/validator身份与六指纹由插件绑定。PAUSE 停止新领取，close 后进入 PAUSED；RESUME/RECOVER 可恢复租约、批次和 FINALIZING 发布事务。非V2 run直接拒绝并要求重新全量扫描。
 
 ## 图与查询
 
 V2把已验证trace投影为类型化拓扑：SERVICE/ENTRY/JAVA_SYMBOL/HTTP_ENDPOINT/MESSAGE_CHANNEL/MESSAGE_SUBSCRIPTION/RPC_OPERATION/JOB_TRIGGER/DATA_RESOURCE及相应协议边。provenance单独分片；精确查询和邻接只读目标shard，cursor绑定topologyRootHash。`/spring-explain`返回证据。Java边仍只来自Code Graph。
 
 详见 [V2拓扑](references/topology-v2.md)、[图快照](references/graph-snapshot.md)、[查询与影响](references/query-impact.md) 和 [输出格式](references/output-format.md)。
-
-## 配置迁移
-
-`/spring-migrate` 默认 dry-run，支持 V0.5/V1.0/V1.5 配置升级到V2。旧run/snapshot只读，不伪造V2 provenance，首次V2必须FULL_REBASE。详见 [迁移](references/migration.md)。
 
 契约回放仅用于明确测试并标为 `TEST_ONLY`，见 [契约回放](references/contract-replay.md)。

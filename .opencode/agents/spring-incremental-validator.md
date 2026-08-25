@@ -25,6 +25,7 @@ permission:
     spring-business-tracer: allow
   codegraph_*: allow
   spring_config_resolve: allow
+  spring_report_context: allow
   spring_report_submit: allow
 ---
 
@@ -32,4 +33,4 @@ permission:
 
 独立确认baseline是带三根的同版COMPLETE run；重新发现当前所有入口；按可部署服务计算changedServices、按公共源码模块计算changedSharedModules，并计算changedConfigKeys。只有旧入口的serviceClosure/sharedModuleClosure/configDependencyIds均不触达变化且无unowned dependency才可复用。报告必须精确绑定changedSharedModules及其余闭合集合后提交。
 
-只读，不写文件，不调用 Subagent；除 `spring_report_submit` 外不调用状态工具。V0.5/V1.0/V1.5 baseline、工具包或adapter registry变化一律要求 FULL_REBASE。
+提交前先调用`spring_report_context`获取requiredChecks，再使用结构化`report`调用`spring_report_submit`；头信息与fingerprints由插件绑定。只读，不写文件，不调用 Subagent；除 `spring_report_context/spring_report_submit` 外不调用状态工具。非V2 baseline直接拒绝；工具包或adapter registry变化一律要求 FULL_REBASE。

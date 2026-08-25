@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为V0.5三类Agent报告生成skill-creator兼容grading.json。"""
+"""为三类Agent回放报告生成skill-creator格式的grading.json。"""
 
 from __future__ import annotations
 

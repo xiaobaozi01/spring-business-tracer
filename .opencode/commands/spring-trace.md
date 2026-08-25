@@ -10,6 +10,6 @@ subtask: false
 $ARGUMENTS
 ```
 
-接受 `http:METHOD:/path`、`method:FQCN#method(params)` 或 `entry:id`。先执行 trace/cross-service Doctor，再调用 trace worker；逻辑边界需要两侧证据和 boundary validator；最后调用 trace validator。只有验证通过才写正式入口文档。
+接受 `http:METHOD:/path`、`method:FQCN#method(params)` 或 `entry:id`。先执行 trace/cross-service Doctor，再调用 trace worker并用结构化`traceResult`提交；逻辑边界需要两侧证据和 boundary validator；最后调用 trace validator，Validator先读`spring_report_context`再提交结构化`report`。只有ACCEPTED验证才写正式入口文档。
 
 契约回放测试按任务指定目录输出并标记 `TEST_ONLY`。

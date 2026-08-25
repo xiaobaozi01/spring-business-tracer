@@ -12,4 +12,4 @@ edge `id` 是不含行号与入口归属的稳定语义身份；`evidenceHash` �
 
 正式 snapshot 还包含由插件生成的 `manifest.json` 与 `index.md`。它们和每个入口文档按实际字节存 hash，FINALIZING 恢复时全部重验。
 
-V2拓扑meta/分片和兼容图JSONL读取前逐级拒绝symlink目录、symlink/多硬链文件和超限文件，以no-follow文件描述符读取并在读后复验设备、inode、大小和时间。写入使用同目录独占临时文件、fsync和原子rename，不在旧路径上先truncate。这是工作区资源/路径安全边界，仍不是外部签名。
+V2拓扑meta/分片和证据图JSONL读取前逐级拒绝symlink目录、symlink/多硬链文件和超限文件，以no-follow文件描述符读取并在读后复验设备、inode、大小和时间。写入使用同目录独占临时文件、fsync和原子rename，不在目标路径上先truncate。这是工作区资源/路径安全边界，仍不是外部签名。

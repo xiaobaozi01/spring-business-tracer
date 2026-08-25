@@ -16,7 +16,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["id", "serviceId", "adapter", "adapterDefinitionVersion", "contextIds", "conditions", "visibility", "trigger", "symbolId", "signature", "file", "line", "codeGraphQuery", "beanActivation"],
       "properties": {
-        "id": {"type": "string", "minLength": 1}, "serviceId": {"type": "string", "minLength": 1}, "adapter": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\u0000-\\u001F\\u007F]+$"}, "serviceId": {"type": "string", "minLength": 1}, "adapter": {"type": "string", "minLength": 1},
         "adapterDefinitionVersion": {"const": "2.0.0"}, "contextIds": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true},
         "conditions": {"type": "array"}, "visibility": {"enum": ["PUBLIC", "INTERNAL", "BACKGROUND"]}, "trigger": {"type": "string"},
         "symbolId": {"type": "string", "minLength": 1}, "signature": {"type": "string", "minLength": 1}, "file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1},
