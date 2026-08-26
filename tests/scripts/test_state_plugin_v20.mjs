@@ -7,15 +7,15 @@ import SpringBusinessStatePlugin from "../../.opencode/plugins/spring-business-s
 import { resolveAnalysisContexts } from "../../.opencode/plugins/spring-business/config-resolver.js";
 import { createTopology, queryTopologyBundle, verifyTopologyBundle, writeTopologyBundle, __test as graphTest } from "../../.opencode/plugins/spring-business/graph-v2.js";
 
-const { assertConfigurationSemantics, assertSafeConfigAgent, buildGraphSnapshot, claimBatch, claimDiscovery, closeBatch, commitDiscovery, commitUnit, computeWorkspaceFingerprints, controlRun, diffGraphSnapshots, discoveryStatus, entryStorageKey, findSnapshotPaths, getReportContext, heartbeatBatch, initRun, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverExpiredDiscoveryLeases, recoverRun, runCodeGraphQuery, seedIncrementalRun, statusRun, submitReport, summarizeWorkspaceFingerprints } = SpringBusinessStatePlugin.__test;
+const { assertConfigurationSemantics, assertSafeConfigAgent, buildGraphSnapshot, claimBatch, claimDiscovery, closeBatch, commitDiscovery, commitUnit, computeWorkspaceFingerprints, controlRun, diffGraphSnapshots, discoveryStatus, entryStorageKey, executeCodeGraph, findSnapshotPaths, getReportContext, heartbeatBatch, heartbeatDiscovery, initRun, planRun, queryGraphSnapshot, queryTopologySnapshot, recoverExpiredDiscoveryLeases, recoverRun, runCodeGraphQuery, seedIncrementalRun, statusRun, submitReport, summarizeWorkspaceFingerprints } = SpringBusinessStatePlugin.__test;
 const pluginHooks = await SpringBusinessStatePlugin();
 assert.deepEqual(Object.keys(pluginHooks.tool).sort(), [
   "codegraph_bounded_query",
-  "spring_config_resolve", "spring_discovery_claim", "spring_discovery_commit", "spring_discovery_status", "spring_graph_build", "spring_graph_diff", "spring_graph_query", "spring_report_submit",
+  "spring_config_resolve", "spring_discovery_claim", "spring_discovery_commit", "spring_discovery_heartbeat", "spring_discovery_status", "spring_graph_build", "spring_graph_diff", "spring_graph_query", "spring_report_submit",
   "spring_report_context",
   "spring_state_claim", "spring_state_close_batch", "spring_state_commit", "spring_state_control", "spring_state_fingerprint", "spring_state_heartbeat",
   "spring_state_init", "spring_state_plan", "spring_state_recover", "spring_state_seed", "spring_state_status", "spring_topology_query",
-].sort(), "V2插件必须完整暴露22个CodeGraph、报告上下文、状态、配置、发现和图工具");
+].sort(), "V2插件必须完整暴露23个CodeGraph、报告上下文、状态、配置、发现和图工具");
 let serial = 0;
 const op = (label) => `${label}-${String(++serial).padStart(8, "0")}`;
 const rejects = (fn, fragment) => assert.rejects(fn, (error) => String(error.message).includes(fragment));
@@ -86,15 +86,17 @@ const fp = {
   configHash: "cfg-v20", sourceSnapshot: "src-v1", indexFingerprint: "cg-v1", toolkitFingerprint: "kit-v20",
   resolutionContextHash: resolution.resolutionContextHash, adapterRegistryFingerprint: "adapter-v20", contextIds: ["prod-cn"], resolutionSummary: resolution,
   serviceSnapshots: { order: "order-v1" }, serviceRoots: { order: "modules/order-service" }, sharedModuleSnapshots: {}, sharedModuleRoots: {}, indexMetadata: { order: { projectPath: "order", version: "1.5.0", index: { builtWithVersion: "1.5.0", currentExtractionVersion: 24 }, languages: ["java"] } }, queryLimit: 101,
+  batchingPolicy: { batchSize: 10, retryLimit: 2, discoveryLeaseSeconds: 7200, leaseSeconds: 5400, heartbeatSeconds: 300 },
 };
-assert.doesNotThrow(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 } }));
-assert.throws(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 100 } }), /CONFIG_QUERY_LIMIT_MISMATCH/);
+const batching = { batchSize: 10, retryLimit: 2, discoveryLeaseSeconds: 3600, leaseSeconds: 3600, heartbeatSeconds: 300 };
+assert.doesNotThrow(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101, executable: "codegraph" }, batching }));
+assert.throws(() => assertConfigurationSemantics({ analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 100 }, batching }), /CONFIG_QUERY_LIMIT_MISMATCH/);
 const monorepoRoot = await mkdtemp(join(tmpdir(), "spring-monorepo-fingerprint-v20-"));
 await mkdir(join(monorepoRoot, ".opencode"), { recursive: true });
 await mkdir(join(monorepoRoot, "service-a/src/main/java"), { recursive: true });
 await writeFile(join(monorepoRoot, "service-a/src/main/java/App.java"), "class App {}\n");
 const monorepoConfig = {
-  analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 },
+  analysis: { maxBranches: 100 }, codeGraph: { queryLimit: 101 }, batching,
   workspace: { services: [{ id: "service-a", root: "service-a", packages: ["com.acme"], aliases: ["service-a"] }], sharedModules: [] },
   analysisContexts: { defaultContext: "default", definitions: [{ id: "default", activeProfiles: [], propertySources: [], optionalSources: true }] },
   configResolution: {}, adapterRegistry: {},
@@ -107,6 +109,7 @@ const seenProjectPaths = [];
 const monorepoFingerprint = await computeWorkspaceFingerprints(monorepoRoot, { codeGraphStatus: async (projectPath) => { seenProjectPaths.push(projectPath); return { projectPath }; }, codeGraphVersion: async () => "1.5.0" });
 assert.deepEqual(seenProjectPaths, [await realpath(monorepoRoot)], "共用根索引必须按显式codeGraphProjectPath检查");
 assert.equal(monorepoFingerprint.serviceRootCount, 1);
+assert.deepEqual(monorepoFingerprint.batchingPolicy, batching);
 const compactFingerprint = summarizeWorkspaceFingerprints(monorepoFingerprint);
 assert.equal(compactFingerprint.indexProjects.length, 1);
 assert(!("resolutionSummary" in compactFingerprint), "公开指纹结果不得返回完整配置明细");
@@ -120,6 +123,20 @@ const boundedCallees = await runCodeGraphQuery(monorepoRoot, { mode: "callees", 
 assert.equal(boundedCallees.resultCount, 1);
 assert.equal(boundedCallees.truncated, false);
 assert.equal(boundedCallees.completionStatus, "EXPLICIT_COMPLETE");
+const windowsResult = await executeCodeGraph(monorepoRoot, ["query", "A & B"], { codeGraph: { executable: "C:\\Tools\\codegraph.cmd" } }, {
+  platform: "win32", powerShellExecutable: "powershell.exe",
+  execRunner: async (binary, args, options) => {
+    assert.equal(binary, "powershell.exe");
+    assert(!args.join(" ").includes("A & B"), "用户查询不能拼接进PowerShell脚本");
+    const payload = JSON.parse(Buffer.from(options.env.SPRING_BUSINESS_CODEGRAPH_INVOCATION, "base64").toString("utf8"));
+    assert.deepEqual(payload, { executable: "C:\\Tools\\codegraph.cmd", arguments: ["query", "A & B"] });
+    return { stdout: "ok", stderr: "" };
+  },
+});
+assert.equal(windowsResult.stdout, "ok");
+await rejects(() => executeCodeGraph(monorepoRoot, ["status"], { codeGraph: { executable: "codegraph" } }, {
+  platform: "win32", execRunner: async () => { const error = new Error("CommandNotFoundException: codegraph"); error.code = 1; throw error; },
+}), "CODEGRAPH_COMMAND_NOT_FOUND");
 await rejects(() => runCodeGraphQuery(monorepoRoot, { mode: "callees", query: "method:deadbeef", projectPath: ".", limit: 101 }, {
   execRunner: async () => ({ stdout: "ℹ Symbol not found\n", stderr: "" }),
 }), "qualifiedName");
@@ -153,11 +170,16 @@ await writeFile(strictJournalPath, JSON.stringify(strictJournalState, null, 2));
 await rejects(() => initRun(root, initIdempotencyInput), "OPERATION_ID_CONFLICT");
 await rejects(() => initRun(root, { ...initIdempotencyInput, retryLimit: 3 }), "OPERATION_ID_CONFLICT");
 await initRun(root, { runId: "run-discovery", operationId: op("discovery-init"), ...fp });
-const discoveryClaim = await claimDiscovery(root, { runId: "run-discovery", workerId: "entry-worker-1", operationId: op("discovery-claim"), leaseSeconds: 600, ...fp });
+const discoveryClaim = await claimDiscovery(root, { runId: "run-discovery", workerId: "entry-worker-1", operationId: op("discovery-claim"), ...fp });
 assert.equal(discoveryClaim.units.length, 1);
+assert.equal((Date.parse(discoveryClaim.units[0].leaseUntil) - Date.parse(discoveryClaim.serverNow)) / 1000, 7200, "发现租约必须使用run冻结配置");
 assert.equal(discoveryClaim.units[0].submissionContext.runId, "run-discovery");
 assert.equal(discoveryClaim.units[0].submissionContext.serviceId, "order");
 assert.equal(discoveryClaim.units[0].submissionContext.preferredParameter, "inventory");
+const discoveryHeartbeatOperation = op("discovery-heartbeat");
+const discoveryHeartbeat = await heartbeatDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: discoveryHeartbeatOperation });
+assert.equal(discoveryHeartbeat.leaseSeconds, 7200);
+assert.deepEqual(await heartbeatDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: discoveryHeartbeatOperation }), discoveryHeartbeat);
 await rejects(() => commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-type-error"), status: "COMPLETE", inventory: [], ...fp }, "spring-entry-worker"), "STRUCTURED_INPUT_TYPE_MISMATCH");
 const wrongRunInventory = structuredClone(inventory("wrong-run"));
 await rejects(() => commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-wrong-run"), status: "COMPLETE", inventory: wrongRunInventory, ...fp }, "spring-entry-worker"), "INVENTORY_RUN_ID_MISMATCH");
@@ -167,8 +189,13 @@ await rejects(() => commitDiscovery(root, { runId: "run-discovery", serviceId: "
 await rejects(() => commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-bad-count"), status: "COMPLETE", inventory: inventory("run-discovery", 62), ...fp }, "spring-entry-worker"), "totalEntries");
 const structuredInventory = structuredClone(inventory("run-discovery"));
 delete structuredInventory.schemaVersion; delete structuredInventory.runId; delete structuredInventory.serviceId; delete structuredInventory.fingerprints;
+const discoveryStatePath = join(root, ".opencode/.cache/spring-business-tracer/runs/run-discovery/run.json");
+const discoveryState = JSON.parse(await readFile(discoveryStatePath, "utf8"));
+discoveryState.discovery.units.order.leaseUntil = "2000-01-01T00:00:00.000Z";
+await writeFile(discoveryStatePath, JSON.stringify(discoveryState, null, 2));
 const committedDiscovery = await commitDiscovery(root, { runId: "run-discovery", serviceId: "order", workerId: "entry-worker-1", leaseToken: discoveryClaim.units[0].leaseToken, operationId: op("discovery-commit"), status: "COMPLETE", inventory: structuredInventory, ...fp }, "spring-entry-worker");
 assert.equal(committedDiscovery.entryCount, 1);
+assert.equal(committedDiscovery.lease.lateCommitAccepted, true, "未被重新领取的迟到发现结果应由fencing token安全接收");
 assert.deepEqual((await discoveryStatus(root, "run-discovery")).remainingServices, []);
 await planRun(root, { runId: "run-discovery", operationId: op("discovery-plan"), ...fp });
 assert.deepEqual(Object.keys((await statusRun(root, "run-discovery")).units), ["discovered-order-get"]);
@@ -402,13 +429,21 @@ assert.equal(paused.phase, "PAUSED");
 assert.deepEqual(await controlRun(root, { runId: "run-control", action: "PAUSE", operationId: pauseOperation }), paused, "同operationId应返回幂等结果");
 await rejects(() => controlRun(root, { runId: "run-control", action: "FAIL", operationId: pauseOperation }), "OPERATION_ID_CONFLICT");
 assert.equal((await controlRun(root, { runId: "run-control", action: "RESUME", operationId: op("resume"), ...fp })).phase, "PLANNED");
-const controlClaim = await claimBatch(root, { runId: "run-control", workerId: "control-worker", operationId: op("control-claim"), leaseSeconds: 30, ...fp });
+const controlClaim = await claimBatch(root, { runId: "run-control", workerId: "control-worker", operationId: op("control-claim"), ...fp });
+assert.equal((Date.parse(controlClaim.lease.leaseUntil) - Date.parse(controlClaim.lease.serverNow)) / 1000, 5400, "批次租约必须使用run冻结配置");
 const heartbeatOperation = op("heartbeat");
 const heartbeat = await heartbeatBatch(root, { runId: "run-control", batchId: controlClaim.batchId, batchToken: controlClaim.batchToken, workerId: "control-worker", operationId: heartbeatOperation, leaseSeconds: 60 });
 assert.equal(heartbeat.extended, 1);
 assert.deepEqual(await heartbeatBatch(root, { runId: "run-control", batchId: controlClaim.batchId, batchToken: controlClaim.batchToken, workerId: "control-worker", operationId: heartbeatOperation, leaseSeconds: 60 }), heartbeat);
+const renewedHeartbeat = await heartbeatBatch(root, { runId: "run-control", batchId: controlClaim.batchId, batchToken: controlClaim.batchToken, workerId: "control-worker", operationId: op("heartbeat-renew"), leaseSeconds: 120 });
+assert.equal(renewedHeartbeat.leaseSeconds, 120);
 assert.equal((await controlRun(root, { runId: "run-control", action: "PAUSE", operationId: op("pause-active") })).phase, "PAUSE_REQUESTED");
-await commitUnit(root, { runId: "run-control", entryId: "control-entry", workerId: "control-worker", batchId: controlClaim.batchId, fingerprintToken: controlClaim.units[0].fingerprintToken, status: "TRACED", traceResult: trace("run-control", "control-entry"), operationId: op("control-trace") });
+const controlStatePath = join(root, ".opencode/.cache/spring-business-tracer/runs/run-control/run.json");
+const controlState = JSON.parse(await readFile(controlStatePath, "utf8"));
+controlState.units["control-entry"].leaseUntil = "2000-01-01T00:00:00.000Z";
+await writeFile(controlStatePath, JSON.stringify(controlState, null, 2));
+const lateControlCommit = await commitUnit(root, { runId: "run-control", entryId: "control-entry", workerId: "control-worker", batchId: controlClaim.batchId, fingerprintToken: controlClaim.units[0].fingerprintToken, status: "TRACED", traceResult: trace("run-control", "control-entry"), operationId: op("control-trace") });
+assert.equal(lateControlCommit.lease.lateCommitAccepted, true, "未被重新领取的迟到批次结果应由fencing token安全接收");
 const closedControl = await closeBatch(root, { runId: "run-control", batchId: controlClaim.batchId, batchToken: controlClaim.batchToken, operationId: op("control-close"), ...fp });
 assert.equal(closedControl.phase, "PAUSED");
 assert.equal((await controlRun(root, { runId: "run-control", action: "RESUME", operationId: op("resume-active"), ...fp })).phase, "TRACING");
@@ -426,6 +461,7 @@ assert.deepEqual(await recoverRun(root, recoverInput), recovered, "恢复重试�
 assert.equal(recovered.recovered, 1);
 assert.equal(recovered.closedBatches, 1);
 assert.equal((await statusRun(root, "run-recover")).units["recover-entry"].status, "RETRYABLE_FAILED");
+await rejects(() => commitUnit(root, { runId: "run-recover", entryId: "recover-entry", workerId: "crashed-worker", batchId: recoverClaim.batchId, fingerprintToken: recoverClaim.units[0].fingerprintToken, status: "TRACED", operationId: op("recover-stale-commit") }), "LEASE_FENCE_MISMATCH");
 assert.equal((await claimBatch(root, { runId: "run-recover", workerId: "replacement-worker", operationId: op("recover-reclaim"), ...fp })).units[0].leaseStage, "TRACE");
 
 await initRun(root, { runId: "run-stale", ...fp });
@@ -583,4 +619,4 @@ await link(externalSentinel, hardlinkTarget);
 await writeTopologyBundle(hardlinkWriteRoot, { contextIds: ["prod-cn"], units: {} }, [{ id: "hardlink-write", type: "SYMBOL", entryMembership: [], services: [] }], []);
 assert.equal(await readFile(externalSentinel, "utf8"), "outside-must-remain-unchanged");
 assert.equal((await queryTopologyBundle(hardlinkWriteRoot, { query: "node", key: "hardlink-write", limit: 1 })).rows[0].id, "hardlink-write");
-console.log("PASS: V2.0的22工具、严格结构化提交/诊断错误、CodeGraph有界适配器、发现checkpoint、配置/脱敏、receiver证据、状态全生命周期、provenance、增量/tombstone、有界diff与安全I/O动态测试");
+console.log("PASS: V2.0的23工具、Windows CodeGraph解析、租约心跳/fencing、严格结构化提交/诊断错误、CodeGraph有界适配器、发现checkpoint、配置/脱敏、receiver证据、状态全生命周期、provenance、增量/tombstone、有界diff与安全I/O动态测试");

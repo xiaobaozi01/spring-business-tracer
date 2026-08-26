@@ -25,12 +25,15 @@ Worker 只能产生 trace 工件；对应 Validator 必须直接提交认证报�
 
 ## 租约
 
-- 领取时记录 `leaseOwner/leaseUntil/attempts`。
-- 过期 `LEASED` 进入 `RETRYABLE_FAILED`，错误码 `LEASE_EXPIRED`；若 attempts 已超过 retryLimit 则直接 `FAILED/RETRY_LIMIT_EXCEEDED`。
-- 非当前租约持有者不能提交当前阶段；TRACE、VALIDATE、PUBLISH分别重新领取。
+- 领取时记录 `leaseOwner/leaseUntil/attempts`，响应同时返回插件进程的`serverNow/heartbeatDueAt`；Agent不要用自身时区换算截止时间。
+- 过期租约只在recover或下一次claim时回收为`RETRYABLE_FAILED`，错误码 `LEASE_EXPIRED`；若 attempts 已超过 retryLimit 则直接 `FAILED/RETRY_LIMIT_EXCEEDED`。
+- 提交与续租以owner、batch和不可伪造fencing token为准。即使wall-clock截止时间刚过，只要租约尚未被回收/重领，迟到结果仍可安全提交并返回`lateCommitAccepted=true`；一旦重领，旧token永久拒绝。
+- TRACE、VALIDATE、PUBLISH分别重新领取；发现租约和批次租约都支持heartbeat，真实续租必须使用新的operationId。
 - `retryLimit` 在状态插件层强制；耗尽后单元进入 `FAILED`，不能再次领取。
 - 一个 run 同时只允许一个 OPEN batch；批次定期 heartbeat，所有租约结束后 close。
 - pause 不打断正在执行的工具；在批次关闭边界停止领取。
+
+租约签发、续租、过期观察均由同一个插件进程使用`Date.now()`完成，ISO时间统一为UTC。因此Agent模型时间和时区不会造成持续超时；系统时钟大幅跳变、设备休眠或没有按`heartbeatDueAt`续租才可能造成过期。`spring_discovery_status`和各租约响应中的`serverNow/remainingSeconds/expiredBySeconds`用于定位这类问题。
 
 ## Resume
 

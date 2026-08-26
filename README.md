@@ -30,6 +30,7 @@ npm ci
 - verified能力细分到Profile：新增静态functional WebFlux、JMS listener、Quartz静态trigger、GraphQL root和gRPC unary；动态变体保持PARTIAL。
 - 在所有服务源码均位于工作区并已被 Code Graph 索引时，继续追踪 Feign/HTTP、MQ、RPC 和 Event 跨服务边界。
 - 入口发现先按服务租约并独立checkpoint，插件重算结构化清单数量；随后按TRACE/VALIDATE/PUBLISH三阶段租约处理。中断后只重试未完成服务/入口。
+- 发现和分析租约都返回插件端`serverNow/heartbeatDueAt`并支持心跳；配置在run初始化时冻结，仍持有当前fencing token的迟到结果可安全提交。
 - 配置、逐服务源码、Code Graph索引、工具包、解析上下文和adapter registry在批次边界防漂移。
 - 由7个受限Subagent独立发现、追踪、配置复算和验证；认证报告只能由对应Validator/Auditor直接提交。
 - 仅基于V2 COMPLETE基线，按serviceClosure、sharedModuleClosure与configDependencyIds保守增量复用；其他schemaVersion直接拒绝。
@@ -117,3 +118,5 @@ python3 tests/scripts/compile_fixtures.py
 ```
 
 固定 Code Graph 响应仅用于 `TEST_ONLY` 契约回放。真实集成取决于目标项目已初始化的 Code Graph 索引，先运行 `/spring-doctor`。
+
+Windows若命令行能执行`codegraph`但OpenCode报告`CODEGRAPH_COMMAND_NOT_FOUND`，运行`Get-Command codegraph`并将得到的`codegraph.cmd`或`codegraph.exe`绝对路径配置到`.opencode/spring-business-tracer.json`的`codeGraph.executable`。持续租约过期通常不是Agent时区导致：检查claim/status返回的`serverNow/heartbeatDueAt/remainingSeconds`，确认执行Agent在续租时点前用新operationId调用对应heartbeat。

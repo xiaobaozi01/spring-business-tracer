@@ -6,6 +6,8 @@ Code Graph 版本可能只公开一个综合工具（例如 explore），也可�
 
 工具包内置的 `codegraph_bounded_query` 是已安装 CodeGraph CLI 的只读薄适配器，只调用官方 `status/query/callees/callers` 并把 `limit` 触顶情况保守标准化为完整性字段；它属于 Code Graph 事实源，不属于原生调用图或文本调用图降级。优先使用该适配器。`spring_state_fingerprint.indexMetadata` 可作为索引 complete/freshness 的机器证据。共用同一 `codeGraphProjectPath` 的模块只需按唯一 projectPath 探测一次。
 
+Windows上的npm全局命令常由`codegraph.cmd`提供，交互式终端能解析不代表OpenCode GUI进程拥有相同PATH。适配器在Windows通过PowerShell解析`.cmd/.bat`，查询参数以Base64 JSON环境变量传递，绝不拼进shell命令。若返回`CODEGRAPH_COMMAND_NOT_FOUND`，先在OpenCode启动环境检查`Get-Command codegraph`；必要时把解析出的`codegraph.cmd`或`codegraph.exe`绝对路径写入`codeGraph.executable`，不要改用文本搜索。
+
 综合工具只有在返回内容能逐项满足下表时才算具备能力。只返回自然语言摘要但没有符号身份、边和源码位置，不算通过。
 
 ## Profile 必需能力

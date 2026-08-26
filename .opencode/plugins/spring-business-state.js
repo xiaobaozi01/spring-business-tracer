@@ -13,7 +13,7 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve, sep, win32 as pathWin32 } from "node:path";
 import { promisify } from "node:util";
 import { resolveAnalysisContexts } from "./spring-business/config-resolver.js";
 import { queryTopologyBundle, verifyTopologyBundle, writeTopologyBundle } from "./spring-business/graph-v2.js";
@@ -42,6 +42,17 @@ const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const WORKER_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const OPERATION_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,127}$/;
 const ENTRY_ID_MAX_LENGTH = 512;
+const MIN_LEASE_SECONDS = 30;
+const MAX_LEASE_SECONDS = 24 * 60 * 60;
+const DEFAULT_LEASE_POLICY = Object.freeze({ discoveryLeaseSeconds: 600, leaseSeconds: 600, heartbeatSeconds: 120 });
+const WINDOWS_CODEGRAPH_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SPRING_BUSINESS_CODEGRAPH_INVOCATION)) | ConvertFrom-Json",
+  "$command = [string]$payload.executable",
+  "[string[]]$arguments = @($payload.arguments | ForEach-Object { [string]$_ })",
+  "& $command @arguments",
+  "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }",
+].join("; ");
 const ENTRY_ADAPTERS = new Set(["SPRING_MVC", "SPRING_WEBFLUX", "SPRING_WEBFLUX_ANNOTATED", "WEBFLUX_FUNCTIONAL_STATIC_HANDLER", "KAFKA", "KAFKA_LISTENER", "RABBIT", "RABBIT_LISTENER", "JMS", "JMS_STATIC_LISTENER", "ROCKETMQ", "SCHEDULED", "QUARTZ", "QUARTZ_STATIC_JOB_TRIGGER", "XXL_JOB", "SPRING_EVENT", "DUBBO", "GRPC", "GRPC_UNARY_PROTO", "GRAPHQL", "GRAPHQL_ANNOTATED_ROOT", "APPLICATION_RUNNER", "KAFKA_STREAMS"]);
 const execFileAsync = promisify(execFile);
 const SOURCE_EXTENSIONS = new Set([".java", ".xml", ".sql", ".properties", ".yml", ".yaml", ".json", ".gradle", ".kts", ".proto", ".graphql", ".graphqls", ".conf", ".toml"]);
@@ -82,6 +93,60 @@ const REPORT_SPECS = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function normalizeBatchingPolicy(value, label = "batching") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}配置缺失`);
+  const policy = {
+    batchSize: Number(value.batchSize),
+    retryLimit: Number(value.retryLimit),
+    discoveryLeaseSeconds: Number(value.discoveryLeaseSeconds),
+    leaseSeconds: Number(value.leaseSeconds),
+    heartbeatSeconds: Number(value.heartbeatSeconds),
+  };
+  if (!Number.isInteger(policy.batchSize) || policy.batchSize < 1 || policy.batchSize > 100) throw new Error(`${label}.batchSize必须为1到100的整数`);
+  if (!Number.isInteger(policy.retryLimit) || policy.retryLimit < 0 || policy.retryLimit > 10) throw new Error(`${label}.retryLimit必须为0到10的整数`);
+  for (const key of ["discoveryLeaseSeconds", "leaseSeconds"]) {
+    if (!Number.isInteger(policy[key]) || policy[key] < MIN_LEASE_SECONDS || policy[key] > MAX_LEASE_SECONDS) throw new Error(`${label}.${key}必须为${MIN_LEASE_SECONDS}到${MAX_LEASE_SECONDS}秒的整数`);
+  }
+  if (!Number.isInteger(policy.heartbeatSeconds) || policy.heartbeatSeconds < 1 || policy.heartbeatSeconds >= Math.min(policy.discoveryLeaseSeconds, policy.leaseSeconds)) {
+    throw new Error(`${label}.heartbeatSeconds必须为正整数且小于两类租约时长`);
+  }
+  return policy;
+}
+
+function requestedLeaseSeconds(value, fallback, label) {
+  const seconds = Number(value ?? fallback);
+  if (!Number.isInteger(seconds) || seconds < MIN_LEASE_SECONDS || seconds > MAX_LEASE_SECONDS) {
+    diagnosticError("LEASE_DURATION_INVALID", `${label}必须为${MIN_LEASE_SECONDS}到${MAX_LEASE_SECONDS}秒的整数`, {
+      field: "leaseSeconds", expected: `${MIN_LEASE_SECONDS}..${MAX_LEASE_SECONDS}`, actual: value, retryable: true,
+      nextAction: "省略leaseSeconds以使用run冻结的配置，或传入范围内整数",
+    });
+  }
+  return seconds;
+}
+
+function leaseWindow(seconds, heartbeatSeconds, timestamp = Date.now()) {
+  const heartbeatDelay = Math.min(heartbeatSeconds, Math.max(1, Math.floor(seconds / 2)));
+  return {
+    serverNow: new Date(timestamp).toISOString(),
+    leaseUntil: new Date(timestamp + seconds * 1000).toISOString(),
+    heartbeatDueAt: new Date(timestamp + heartbeatDelay * 1000).toISOString(),
+    leaseSeconds: seconds,
+    heartbeatSeconds: heartbeatDelay,
+  };
+}
+
+function observeLease(leaseUntil, timestamp = Date.now()) {
+  const deadline = Date.parse(leaseUntil);
+  const expired = !Number.isFinite(deadline) || deadline <= timestamp;
+  return {
+    serverNow: new Date(timestamp).toISOString(),
+    leaseUntil: leaseUntil ?? null,
+    expired,
+    remainingSeconds: Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - timestamp) / 1000)) : 0,
+    expiredBySeconds: expired && Number.isFinite(deadline) ? Math.max(0, Math.ceil((timestamp - deadline) / 1000)) : null,
+  };
 }
 
 function assertIdentifier(value, pattern, label) {
@@ -226,12 +291,52 @@ async function collectSourceFiles(root, directory = root, collected = []) {
   return collected;
 }
 
-async function defaultCodeGraphStatus(root) {
-  const { stdout, stderr } = await execFileAsync("codegraph", ["status", root, "-j"], {
-    cwd: root,
-    timeout: 30_000,
-    maxBuffer: 2 * 1024 * 1024,
-  });
+function configuredCodeGraphExecutable(config, platform = process.platform) {
+  const configured = config?.codeGraph?.executable;
+  if (configured === undefined) return "codegraph";
+  if (typeof configured !== "string" || !configured.trim() || configured.includes("\0")) throw new Error("codeGraph.executable必须是非空字符串");
+  const executable = configured.trim();
+  const platformBasename = platform === "win32" ? pathWin32.basename(executable) : basename(executable);
+  const platformAbsolute = platform === "win32" ? pathWin32.isAbsolute(executable) : isAbsolute(executable);
+  const allowedNames = platform === "win32" ? new Set(["codegraph", "codegraph.exe", "codegraph.cmd", "codegraph.bat"]) : new Set(["codegraph"]);
+  if (!allowedNames.has(platformBasename.toLowerCase())) throw new Error("codeGraph.executable文件名只能是codegraph、codegraph.exe、codegraph.cmd或codegraph.bat");
+  if ((executable.includes("/") || executable.includes("\\")) && !platformAbsolute) throw new Error("带目录的codeGraph.executable必须是绝对路径");
+  return executable;
+}
+
+function codeGraphCommandMissing(error) {
+  const message = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+  return error?.code === "ENOENT" || /CommandNotFoundException|not recognized as (?:an internal|the name)|无法将.+识别为|找不到.+codegraph/iu.test(message);
+}
+
+async function executeCodeGraph(root, args, config, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const executable = options.executable ?? configuredCodeGraphExecutable(config, platform);
+  const runner = options.execRunner ?? execFileAsync;
+  const execution = { cwd: root, timeout: options.timeout, maxBuffer: options.maxBuffer };
+  try {
+    if (platform !== "win32" || extname(executable).toLowerCase() === ".exe") return await runner(executable, args, execution);
+    const invocation = Buffer.from(JSON.stringify({ executable, arguments: args }), "utf8").toString("base64");
+    return await runner(options.powerShellExecutable ?? "powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_CODEGRAPH_SCRIPT], {
+      ...execution,
+      env: { ...process.env, SPRING_BUSINESS_CODEGRAPH_INVOCATION: invocation },
+    });
+  } catch (error) {
+    if (codeGraphCommandMissing(error)) {
+      diagnosticError("CODEGRAPH_COMMAND_NOT_FOUND", "OpenCode进程无法解析CodeGraph CLI", {
+        field: "codeGraph.executable",
+        expected: platform === "win32" ? "codegraph.exe/codegraph.cmd的可执行名称或绝对路径" : "codegraph命令或绝对路径",
+        actual: { platform, executable, pathConfigured: typeof process.env.PATH === "string", pathEntryCount: String(process.env.PATH ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean).length },
+        retryable: true,
+        nextAction: platform === "win32" ? "在OpenCode启动环境执行Get-Command codegraph；若终端可用但OpenCode不可用，在codeGraph.executable配置codegraph.cmd或codegraph.exe绝对路径后重试" : "确认OpenCode进程PATH包含codegraph，或在codeGraph.executable配置绝对路径",
+      });
+    }
+    throw error;
+  }
+}
+
+async function defaultCodeGraphStatus(root, config, options = {}) {
+  const { stdout, stderr } = await executeCodeGraph(root, ["status", root, "-j"], config, { ...options, timeout: 30_000, maxBuffer: 2 * 1024 * 1024 });
   if (stderr.trim()) throw new Error(`Code Graph status失败：${stderr.trim()}`);
   const status = JSON.parse(stdout);
   const pending = status.pendingChanges ?? {};
@@ -249,12 +354,8 @@ async function defaultCodeGraphStatus(root) {
   return status;
 }
 
-async function defaultCodeGraphVersion(root) {
-  const { stdout, stderr } = await execFileAsync("codegraph", ["--version"], {
-    cwd: root,
-    timeout: 10_000,
-    maxBuffer: 256 * 1024,
-  });
+async function defaultCodeGraphVersion(root, config, options = {}) {
+  const { stdout, stderr } = await executeCodeGraph(root, ["--version"], config, { ...options, timeout: 10_000, maxBuffer: 256 * 1024 });
   return `${stdout}\n${stderr}`.trim();
 }
 
@@ -276,7 +377,7 @@ async function runCodeGraphQuery(worktree, input, options = {}) {
   const requestedProject = await realpath(resolve(root, input.projectPath ?? "."));
   if (!allowedProjects.has(requestedProject)) throw new Error("请求的Code Graph projectPath未在workspace中声明");
   if (input.mode === "status") {
-    const status = await (options.statusRunner ?? defaultCodeGraphStatus)(requestedProject);
+    const status = options.statusRunner ? await options.statusRunner(requestedProject) : await defaultCodeGraphStatus(requestedProject, config, options);
     return { tool: "codegraph status", mode: "status", projectPath: requestedProject, resultCount: 1, truncated: false, completionStatus: "EXPLICIT_COMPLETE", summaryOmittedCount: 0, status };
   }
   const limit = Number(input.limit);
@@ -289,8 +390,7 @@ async function runCodeGraphQuery(worktree, input, options = {}) {
     ? ["query", input.query, "-p", requestedProject, "-l", String(limit), "-j"]
     : [input.mode, input.query, "-p", requestedProject, "-l", String(limit), "-j"];
   if (input.mode === "query" && input.kind) command.push("-k", input.kind);
-  const runner = options.execRunner ?? execFileAsync;
-  const { stdout, stderr } = await runner("codegraph", command, { cwd: requestedProject, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 });
+  const { stdout, stderr } = await executeCodeGraph(requestedProject, command, config, { ...options, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 });
   if (stderr?.trim()) throw new Error(`Code Graph ${input.mode}失败：${stderr.trim()}`);
   let parsed;
   try {
@@ -364,6 +464,7 @@ function summarizeWorkspaceFingerprints(fingerprints) {
     serviceRootCount: fingerprints.serviceRootCount,
     sharedModuleRootCount: fingerprints.sharedModuleRootCount,
     queryLimit: fingerprints.queryLimit,
+    batchingPolicy: fingerprints.batchingPolicy,
   };
 }
 
@@ -419,6 +520,8 @@ function assertConfigurationSemantics(config) {
   if (!Number.isInteger(queryLimit) || queryLimit !== maxBranches + 1) {
     throw new Error(`CONFIG_QUERY_LIMIT_MISMATCH: codeGraph.queryLimit必须严格等于analysis.maxBranches+1（期望${maxBranches + 1}）`);
   }
+  configuredCodeGraphExecutable(config);
+  normalizeBatchingPolicy(config.batching);
 }
 
 async function computeWorkspaceFingerprints(worktree, options = {}) {
@@ -459,10 +562,9 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
   for (const sharedModule of configuredSharedModules) {
     sharedModules.push(await normalizeModule(sharedModule, "shared"));
   }
-  const statusRunner = options.codeGraphStatus ?? defaultCodeGraphStatus;
-  const versionRunner = options.codeGraphVersion ?? defaultCodeGraphVersion;
   const indexParts = [];
-  indexParts.push("codegraph-version", "\0", await versionRunner(root), "\0");
+  const codeGraphVersion = options.codeGraphVersion ? await options.codeGraphVersion(root) : await defaultCodeGraphVersion(root, config, options);
+  indexParts.push("codegraph-version", "\0", codeGraphVersion, "\0");
   const serviceSnapshots = Object.create(null);
   const serviceRoots = Object.create(null);
   const sharedModuleSnapshots = Object.create(null);
@@ -481,7 +583,7 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
       sharedModuleSnapshots[module.id] = snapshot;
       sharedModuleRoots[module.id] = module.relativeRoot;
     }
-    const status = await statusRunner(module.projectPath);
+    const status = options.codeGraphStatus ? await options.codeGraphStatus(module.projectPath) : await defaultCodeGraphStatus(module.projectPath, config, options);
     const normalizedStatus = typeof status === "string" ? { legacyText: status } : status;
     const metadataKey = module.kind === "service" ? module.id : `shared:${module.id}`;
     indexMetadata[metadataKey] = normalizedStatus;
@@ -510,6 +612,7 @@ async function computeWorkspaceFingerprints(worktree, options = {}) {
     serviceRootCount: services.length,
     sharedModuleRootCount: sharedModules.length,
     queryLimit,
+    batchingPolicy: normalizeBatchingPolicy(config.batching),
   };
 }
 
@@ -1021,11 +1124,12 @@ async function initRun(worktree, input) {
   if (mode === "INCREMENTAL" && !input.baseRunId) throw new Error("INCREMENTAL run必须指定baseRunId");
   if (mode === "FULL" && input.baseRunId) throw new Error("FULL run不能指定baseRunId");
   if (input.baseRunId) assertIdentifier(input.baseRunId, RUN_ID, "baseRunId");
-  const batchSize = Number(input.batchSize ?? 10);
+  const batchingPolicy = normalizeBatchingPolicy(input.batchingPolicy ?? { batchSize: 10, retryLimit: 2, ...DEFAULT_LEASE_POLICY }, "batchingPolicy");
+  const batchSize = Number(input.batchSize ?? batchingPolicy.batchSize);
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) {
     throw new Error("batchSize必须为1到100的整数");
   }
-  const retryLimit = Number(input.retryLimit ?? 2);
+  const retryLimit = Number(input.retryLimit ?? batchingPolicy.retryLimit);
   if (!Number.isInteger(retryLimit) || retryLimit < 0 || retryLimit > 10) {
     throw new Error("retryLimit必须为0到10的整数");
   }
@@ -1077,6 +1181,7 @@ async function initRun(worktree, input) {
       recentOperations: {},
       batchSize,
       retryLimit,
+      batchingPolicy: { ...batchingPolicy, batchSize, retryLimit },
       createdAt,
       updatedAt: createdAt,
       counts: {},
@@ -1125,8 +1230,10 @@ async function claimDiscovery(worktree, input) {
     const limit = Math.max(1, Math.min(4, Number.isInteger(requested) ? requested : 1));
     const requestedServices = input.serviceIds?.length ? new Set(input.serviceIds) : null;
     if (requestedServices && [...requestedServices].some((id) => !Object.hasOwn(discoveryUnits(run), id))) throw new Error("serviceIds包含未知服务");
-    const leaseSeconds = Math.max(30, Math.min(3600, Number(input.leaseSeconds ?? 600)));
-    const leaseUntil = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const policy = normalizeBatchingPolicy(run.batchingPolicy, "run.batchingPolicy");
+    const leaseSeconds = requestedLeaseSeconds(input.leaseSeconds, policy.discoveryLeaseSeconds, "入口发现租约");
+    const window = leaseWindow(leaseSeconds, policy.heartbeatSeconds);
+    const leaseUntil = window.leaseUntil;
     const selected = Object.values(discoveryUnits(run))
       .filter((unit) => new Set(["PENDING", "RETRYABLE_FAILED"]).has(unit.status) && (!requestedServices || requestedServices.has(unit.serviceId)))
       .sort((a, b) => a.serviceId.localeCompare(b.serviceId))
@@ -1151,9 +1258,10 @@ async function claimDiscovery(worktree, input) {
         operationIdSuggestion: `discovery-commit-${randomUUID()}`,
         preferredParameter: "inventory",
         autoBoundFields: ["schemaVersion", "runId", "serviceId", "fingerprints"],
+        lease: { ...window, heartbeatTool: "spring_discovery_heartbeat", heartbeatOperationIdSuggestion: `discovery-heartbeat-${randomUUID()}` },
       },
     }));
-    const resultValue = { runId: run.runId, phase: run.phase, recovered, units: resultUnits, remaining: Object.values(discoveryUnits(run)).filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId).sort() };
+    const resultValue = { runId: run.runId, phase: run.phase, recovered, serverNow: window.serverNow, units: resultUnits, remaining: Object.values(discoveryUnits(run)).filter((unit) => unit.status !== "COMPLETE").map((unit) => unit.serviceId).sort() };
     recordOperation(run, "DISCOVERY_CLAIM", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1174,12 +1282,8 @@ async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
     const unit = discoveryUnits(run)[input.serviceId];
     if (!unit) throw new Error(`未知入口发现服务：${input.serviceId}`);
     if (unit.status !== "LEASED" || unit.leaseOwner !== input.workerId || unit.leaseToken !== input.leaseToken) throw new Error("入口发现提交者或租约令牌不匹配");
-    if (Date.parse(unit.leaseUntil) <= Date.now()) {
-      recoverExpiredDiscoveryLeases(run);
-      updateCounters(run);
-      await atomicWriteJson(paths.state, run);
-      throw new Error("入口发现租约已过期，拒绝旧worker提交");
-    }
+    const leaseObservation = observeLease(unit.leaseUntil);
+    if (leaseObservation.expired) run.events.push({ at: leaseObservation.serverNow, type: "DISCOVERY_LATE_COMMIT_ACCEPTED", serviceId: unit.serviceId, expiredBySeconds: leaseObservation.expiredBySeconds, leaseTokenStillCurrent: true });
     let inventory = null;
     if (input.status === "COMPLETE") {
       inventory = validateServiceInventory(run, input.serviceId, input.inventory, true);
@@ -1198,8 +1302,36 @@ async function commitDiscovery(worktree, input, agent = PRIMARY_AGENT) {
     unit.leaseToken = null;
     run.events.push({ at: nowIso(), type: "DISCOVERY_COMMITTED", serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount });
     updateCounters(run);
-    const resultValue = { runId: run.runId, serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount, artifactHash: unit.artifactHash, remaining: Object.values(discoveryUnits(run)).filter((item) => item.status !== "COMPLETE").map((item) => item.serviceId).sort() };
+    const resultValue = { runId: run.runId, serviceId: input.serviceId, status: unit.status, entryCount: unit.entryCount, artifactHash: unit.artifactHash, lease: { ...leaseObservation, lateCommitAccepted: leaseObservation.expired }, remaining: Object.values(discoveryUnits(run)).filter((item) => item.status !== "COMPLETE").map((item) => item.serviceId).sort() };
     recordOperation(run, "DISCOVERY_COMMIT", input, replay?.digest, resultValue);
+    await atomicWriteJson(paths.state, run);
+    return resultValue;
+  });
+}
+
+async function heartbeatDiscovery(worktree, input) {
+  assertIdentifier(input.workerId, WORKER_ID, "workerId");
+  return withRunLock(worktree, input.runId, async (paths) => {
+    const run = await readJson(paths.state);
+    assertCurrentRun(run);
+    const replay = operationReplay(run, "DISCOVERY_HEARTBEAT", input);
+    if (replay?.result) return replay.result;
+    const unit = discoveryUnits(run)[input.serviceId];
+    if (!unit || unit.status !== "LEASED" || unit.leaseOwner !== input.workerId || unit.leaseToken !== input.leaseToken) {
+      diagnosticError("DISCOVERY_LEASE_FENCE_MISMATCH", "不能续租非当前入口发现租约", {
+        field: "leaseToken", expected: unit ? { serviceId: unit.serviceId, status: unit.status, leaseOwner: unit.leaseOwner } : "已领取服务", actual: { serviceId: input.serviceId, workerId: input.workerId }, retryable: false,
+        nextAction: "停止当前worker提交；由主Agent重新领取该服务并使用新leaseToken",
+      });
+    }
+    const previous = observeLease(unit.leaseUntil);
+    const policy = normalizeBatchingPolicy(run.batchingPolicy, "run.batchingPolicy");
+    const seconds = requestedLeaseSeconds(input.leaseSeconds, policy.discoveryLeaseSeconds, "入口发现续租");
+    const window = leaseWindow(seconds, policy.heartbeatSeconds);
+    unit.leaseUntil = window.leaseUntil;
+    const resultValue = { runId: run.runId, serviceId: unit.serviceId, renewed: true, previousLease: previous, ...window, operationIdSuggestion: `discovery-heartbeat-${randomUUID()}` };
+    recordOperation(run, "DISCOVERY_HEARTBEAT", input, replay?.digest, resultValue);
+    run.events.push({ at: window.serverNow, type: "DISCOVERY_HEARTBEAT", serviceId: unit.serviceId, previousExpired: previous.expired, leaseUntil: window.leaseUntil });
+    updateCounters(run);
     await atomicWriteJson(paths.state, run);
     return resultValue;
   });
@@ -1234,10 +1366,16 @@ async function readDiscoveredEntries(paths, run) {
 
 async function discoveryStatus(worktree, runId) {
   const run = await statusRun(worktree, runId);
-  const units = Object.values(discoveryUnits(run)).sort((a, b) => a.serviceId.localeCompare(b.serviceId));
+  const timestamp = Date.now();
+  const serverNow = new Date(timestamp).toISOString();
+  const units = Object.values(discoveryUnits(run)).sort((a, b) => a.serviceId.localeCompare(b.serviceId)).map((unit) => ({
+    ...unit,
+    leaseStatus: unit.status === "LEASED" ? observeLease(unit.leaseUntil, timestamp) : null,
+  }));
   return {
     runId,
     phase: run.phase,
+    serverNow,
     started: run.discovery?.started === true,
     complete: units.length > 0 && units.every((unit) => unit.status === "COMPLETE"),
     entryCount: units.reduce((sum, unit) => sum + (unit.entryCount ?? 0), 0),
@@ -1356,7 +1494,8 @@ async function claimBatch(worktree, input) {
     }
     const requested = Number(input.limit ?? run.batchSize);
     const limit = Math.max(1, Math.min(run.batchSize, Number.isInteger(requested) ? requested : run.batchSize));
-    const leaseSeconds = Math.max(30, Math.min(3600, Number(input.leaseSeconds ?? 600)));
+    const policy = normalizeBatchingPolicy(run.batchingPolicy, "run.batchingPolicy");
+    const leaseSeconds = requestedLeaseSeconds(input.leaseSeconds, policy.leaseSeconds, "批次租约");
     const claimableStage = (unit) => {
       if (unit.status === "PENDING") return "TRACE";
       if (unit.status === "TRACED") return "VALIDATE";
@@ -1368,7 +1507,8 @@ async function claimBatch(worktree, input) {
       .filter((unit) => claimableStage(unit))
       .sort((left, right) => left.id.localeCompare(right.id))
       .slice(0, limit);
-    const leaseUntil = new Date(Date.now() + leaseSeconds * 1000).toISOString();
+    const window = leaseWindow(leaseSeconds, policy.heartbeatSeconds);
+    const leaseUntil = window.leaseUntil;
     const batchId = selected.length ? `batch-${randomUUID()}` : null;
     for (const unit of selected) {
       const stage = claimableStage(unit);
@@ -1405,7 +1545,7 @@ async function claimBatch(worktree, input) {
         ...(unit.leaseStage === "VALIDATE" ? reportSubmissionContext(run, "TRACE", "spring-trace-validator", { entryId: unit.id, batchToken: unit.fingerprintToken }) : {}),
       },
     }));
-    const resultValue = { runId: run.runId, phase: run.phase, batchId, batchToken: batchId ? run.batches[batchId].token : null, recovered, units: resultUnits };
+    const resultValue = { runId: run.runId, phase: run.phase, batchId, batchToken: batchId ? run.batches[batchId].token : null, recovered, serverNow: window.serverNow, lease: selected.length ? { ...window, heartbeatTool: "spring_state_heartbeat", heartbeatOperationIdSuggestion: `batch-heartbeat-${randomUUID()}` } : null, units: resultUnits };
     recordOperation(run, "BATCH_CLAIM", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1426,24 +1566,14 @@ async function commitUnit(worktree, input) {
     const unit = Object.hasOwn(run.units, input.entryId) ? run.units[input.entryId] : null;
     if (!unit) throw new Error(`入口不存在：${input.entryId}`);
     if (!input.fingerprintToken || input.fingerprintToken !== unit.fingerprintToken) {
-      throw new Error("提交指纹令牌与领取批次不一致");
+      diagnosticError("LEASE_FENCE_MISMATCH", "提交指纹令牌与当前租约不一致", { field: "fingerprintToken", expected: "当前claim返回的fingerprintToken", actual: input.fingerprintToken ? "非当前token" : "<missing>", retryable: false, nextAction: "停止提交旧worker结果；重新领取该入口并使用新的批次、workerId与fingerprintToken" });
     }
     if (unit.status !== "LEASED" || unit.leaseOwner !== input.workerId) {
       throw new Error("提交者不是当前租约持有者");
     }
     if (input.batchId !== unit.batchId || run.batches[input.batchId]?.status !== "OPEN") throw new Error("提交批次不匹配或已关闭");
-    if (Date.parse(unit.leaseUntil) <= Date.now()) {
-      const stage = unit.leaseStage;
-      unit.status = unit.stageAttempts[stage] > run.retryLimit ? "FAILED" : "RETRYABLE_FAILED";
-      unit.retryStage = stage;
-      unit.leaseOwner = null;
-      unit.leaseUntil = null;
-      unit.fingerprintToken = null;
-      unit.lastError = unit.status === "FAILED" ? "RETRY_LIMIT_EXCEEDED" : "LEASE_EXPIRED";
-      updateCounters(run);
-      await atomicWriteJson(paths.state, run);
-      throw new Error("租约已过期，拒绝旧worker提交");
-    }
+    const leaseObservation = observeLease(unit.leaseUntil);
+    if (leaseObservation.expired) run.events.push({ at: leaseObservation.serverNow, type: "UNIT_LATE_COMMIT_ACCEPTED", batchId: input.batchId, entryId: unit.id, expiredBySeconds: leaseObservation.expiredBySeconds, fingerprintTokenStillCurrent: true });
     const expected = { TRACE: "TRACED", VALIDATE: "VERIFIED", PUBLISH: "PUBLISHED" }[unit.leaseStage];
     if (!new Set([expected, "RETRYABLE_FAILED", "BLOCKED", "FAILED"]).has(input.status)) {
       throw new Error(`阶段${unit.leaseStage}不能提交${input.status}`);
@@ -1494,7 +1624,7 @@ async function commitUnit(worktree, input) {
     }
     run.events.push({ at: nowIso(), type: "UNIT_COMMITTED", batchId: input.batchId, entryId: input.entryId, stage: committedStage, status: unit.status });
     updateCounters(run);
-    const resultValue = { runId: run.runId, phase: run.phase, unit, counts: run.counts };
+    const resultValue = { runId: run.runId, phase: run.phase, unit, counts: run.counts, lease: { ...leaseObservation, lateCommitAccepted: leaseObservation.expired } };
     recordOperation(run, "UNIT_COMMIT", input, replay?.digest, resultValue);
     await atomicWriteJson(paths.state, run);
     return resultValue;
@@ -1648,8 +1778,10 @@ async function heartbeatBatch(worktree, input) {
     if (replay?.result) return replay.result;
     const batch = run.batches[input.batchId];
     if (!batch || batch.status !== "OPEN" || batch.token !== input.batchToken || batch.workerId !== input.workerId) throw new Error("不能续租非当前OPEN批次");
-    const seconds = Math.max(30, Math.min(3600, Number(input.leaseSeconds ?? 600)));
-    const leaseUntil = new Date(Date.now() + seconds * 1000).toISOString();
+    const policy = normalizeBatchingPolicy(run.batchingPolicy, "run.batchingPolicy");
+    const seconds = requestedLeaseSeconds(input.leaseSeconds, policy.leaseSeconds, "批次续租");
+    const window = leaseWindow(seconds, policy.heartbeatSeconds);
+    const leaseUntil = window.leaseUntil;
     let extended = 0;
     for (const id of batch.unitIds) {
       const unit = run.units[id];
@@ -1658,7 +1790,7 @@ async function heartbeatBatch(worktree, input) {
         extended += 1;
       }
     }
-    const resultValue = { runId: run.runId, batchId: batch.id, extended, leaseUntil };
+    const resultValue = { runId: run.runId, batchId: batch.id, extended, ...window, operationIdSuggestion: `batch-heartbeat-${randomUUID()}` };
     recordOperation(run, "BATCH_HEARTBEAT", input, replay?.digest, resultValue);
     run.events.push({ at: nowIso(), type: "BATCH_HEARTBEAT", batchId: batch.id, extended });
     updateCounters(run);
@@ -2445,6 +2577,12 @@ async function statusRun(worktree, runId) {
   return run;
 }
 
+function runLeaseDiagnostics(run, timestamp = Date.now()) {
+  const units = Object.values(run.units ?? {}).filter((unit) => unit.status === "LEASED").map((unit) => ({ entryId: unit.id, workerId: unit.leaseOwner, batchId: unit.batchId, stage: unit.leaseStage, ...observeLease(unit.leaseUntil, timestamp) }));
+  const discovery = Object.values(run.discovery?.units ?? {}).filter((unit) => unit.status === "LEASED").map((unit) => ({ serviceId: unit.serviceId, workerId: unit.leaseOwner, ...observeLease(unit.leaseUntil, timestamp) }));
+  return { serverNow: new Date(timestamp).toISOString(), activeUnitLeases: units, activeDiscoveryLeases: discovery };
+}
+
 function result(value) {
   return JSON.stringify(value, null, 2);
 }
@@ -2500,12 +2638,27 @@ const SpringBusinessStatePlugin = async () => ({
         operationId: tool.schema.string(),
         serviceIds: tool.schema.array(tool.schema.string()).optional(),
         limit: tool.schema.number().int().min(1).max(4).optional(),
-        leaseSeconds: tool.schema.number().int().min(30).max(3600).optional(),
+        leaseSeconds: tool.schema.number().int().min(MIN_LEASE_SECONDS).max(MAX_LEASE_SECONDS).optional(),
       },
       async execute(args, context) {
         assertPrimary(context);
         const fingerprints = await computeWorkspaceFingerprints(context.worktree);
         return result(await claimDiscovery(context.worktree, { ...args, ...fingerprints }));
+      },
+    }),
+    spring_discovery_heartbeat: tool({
+      description: "使用当前service leaseToken续租入口发现；过期但尚未被重新领取的fencing token仍可安全续租",
+      args: {
+        runId: tool.schema.string(),
+        serviceId: tool.schema.string(),
+        workerId: tool.schema.string(),
+        leaseToken: tool.schema.string(),
+        operationId: tool.schema.string(),
+        leaseSeconds: tool.schema.number().int().min(MIN_LEASE_SECONDS).max(MAX_LEASE_SECONDS).optional(),
+      },
+      async execute(args, context) {
+        if (![PRIMARY_AGENT, "spring-entry-worker"].includes(context.agent)) throw new Error(`Agent ${context.agent}不能续租入口发现`);
+        return result(await heartbeatDiscovery(context.worktree, args));
       },
     }),
     spring_discovery_commit: tool({
@@ -2553,7 +2706,7 @@ const SpringBusinessStatePlugin = async () => ({
         workerId: tool.schema.string(),
         operationId: tool.schema.string(),
         limit: tool.schema.number().int().min(1).max(100).optional(),
-        leaseSeconds: tool.schema.number().int().min(30).max(3600).optional(),
+        leaseSeconds: tool.schema.number().int().min(MIN_LEASE_SECONDS).max(MAX_LEASE_SECONDS).optional(),
       },
       async execute(args, context) {
         assertPrimary(context);
@@ -2583,9 +2736,9 @@ const SpringBusinessStatePlugin = async () => ({
     }),
     spring_state_heartbeat: tool({
       description: "延长当前OPEN批次内仍活动的租约",
-      args: { runId: tool.schema.string(), batchId: tool.schema.string(), batchToken: tool.schema.string(), workerId: tool.schema.string(), operationId: tool.schema.string(), leaseSeconds: tool.schema.number().int().min(30).max(3600).optional() },
+      args: { runId: tool.schema.string(), batchId: tool.schema.string(), batchToken: tool.schema.string(), workerId: tool.schema.string(), operationId: tool.schema.string(), leaseSeconds: tool.schema.number().int().min(MIN_LEASE_SECONDS).max(MAX_LEASE_SECONDS).optional() },
       async execute(args, context) {
-        assertPrimary(context);
+        if (!SAFE_CONFIG_AGENTS.has(context.agent)) throw new Error(`Agent ${context.agent}不能续租分析批次`);
         return result(await heartbeatBatch(context.worktree, args));
       },
     }),
@@ -2731,7 +2884,8 @@ const SpringBusinessStatePlugin = async () => ({
       args: { runId: tool.schema.string() },
       async execute(args, context) {
         assertPrimary(context);
-        return result(await statusRun(context.worktree, args.runId));
+        const run = await statusRun(context.worktree, args.runId);
+        return result({ ...run, leaseDiagnostics: runLeaseDiagnostics(run) });
       },
     }),
   },
@@ -2740,7 +2894,7 @@ const SpringBusinessStatePlugin = async () => ({
 Object.defineProperty(SpringBusinessStatePlugin, "__test", {
   value: Object.freeze({
     buildGraphSnapshot, claimBatch, closeBatch, commitUnit, computeWorkspaceFingerprints, runCodeGraphQuery, summarizeWorkspaceFingerprints, entryStorageKey, getReportContext,
-    claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, findSnapshotPaths, heartbeatBatch, initRun, planRun,
+    claimDiscovery, commitDiscovery, controlRun, diffGraphSnapshots, discoveryStatus, executeCodeGraph, findSnapshotPaths, heartbeatBatch, heartbeatDiscovery, initRun, planRun,
     assertSafeConfigAgent, queryGraphSnapshot, queryTopologySnapshot, recoverRun, resolveTrustedGraph, seedIncrementalRun, statusRun, submitReport,
     assertConfigurationSemantics, recoverExpiredDiscoveryLeases,
   }),

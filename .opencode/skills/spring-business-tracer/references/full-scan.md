@@ -34,9 +34,9 @@
 - 主 Agent 顺序提交状态，防止多个 worker 覆盖同一 manifest。
 - claim和close、RESUME、PARTIAL、COMPLETE校验 config/source/index/toolkit/resolvedConfig/adapterRegistry 六类V2指纹。
 - commit 必须传回 claim 返回的单元 `fingerprintToken`。
-- TRACE、VALIDATE、PUBLISH是三个独立租约阶段；每批heartbeat并在所有单元提交后close。
+- TRACE、VALIDATE、PUBLISH是三个独立租约阶段；claim返回插件端`serverNow/heartbeatDueAt`，每批在到期前heartbeat并在所有单元提交后close。
 - 超过 retryLimit 为 `BLOCKED/FAILED`，不能无限循环。
-- 入口发现同样使用30~3600秒租约并逐服务checkpoint；中断后保留COMPLETE服务，只回收过期租约、重试缺失服务。
+- 入口发现同样使用30~86400秒租约并逐服务checkpoint，支持独立heartbeat；中断后保留COMPLETE服务，只回收过期租约、重试缺失服务。
 
 ## 资源边界
 

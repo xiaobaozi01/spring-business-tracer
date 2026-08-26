@@ -110,10 +110,12 @@ def validate_plugin() -> list[str]:
     graph = read(ROOT / ".opencode/plugins/spring-business/graph-v2.js")
     for token in ("resolutionContextHash", "adapterRegistryFingerprint", "changedConfigKeys", "spring_topology_query", "spring_config_resolve", "topologyRootHash", "CONFIG_PRECEDENCE"):
         check(token in plugin, f"插件缺少{token}")
-    for token in ("codegraph_bounded_query", "LIMIT_REACHED", "EXPLICIT_COMPLETE", "codegraph\", command"):
+    for token in ("codegraph_bounded_query", "LIMIT_REACHED", "EXPLICIT_COMPLETE", "executeCodeGraph", "CODEGRAPH_COMMAND_NOT_FOUND", "WINDOWS_CODEGRAPH_SCRIPT"):
         check(token in plugin, f"CodeGraph薄适配器缺少{token}")
     for token in ("spring_report_context", "OPERATION_ID_CONFLICT", "STRUCTURED_INPUT_TYPE_MISMATCH", "REPORT_CHECKS_EMPTY", "entryStorageKey", "RUN_SCHEMA_VERSION_UNSUPPORTED", "inventory: STRUCTURED_OBJECT_SCHEMA", "entries: STRUCTURED_ARRAY_SCHEMA", "traceResult: STRUCTURED_OBJECT_SCHEMA", "report: STRUCTURED_OBJECT_SCHEMA"):
         check(token in plugin, f"结构化提交/诊断契约缺少{token}")
+    for token in ("spring_discovery_heartbeat", "heartbeatDueAt", "DISCOVERY_LATE_COMMIT_ACCEPTED", "UNIT_LATE_COMMIT_ACCEPTED", "batchingPolicy", "runLeaseDiagnostics"):
+        check(token in plugin, f"租约续期/fencing契约缺少{token}")
     for forbidden in ("inventoryJson", "entriesJson", "traceResultJson", "reportJson", "migrateConfiguration", "spring_migrate_config", "legacyDigest", "legacyPrefix"):
         check(forbidden not in plugin, f"插件仍包含已删除的兼容协议：{forbidden}")
     for token in ("MAX_SOURCE_BYTES", "PLACEHOLDER_CYCLE", "SECRET_KEY", "CONFIG_SOURCE_FORBIDDEN", "maxAliasCount: 0"):

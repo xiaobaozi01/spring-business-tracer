@@ -14,6 +14,7 @@
     "manifest": "manifest.json"
   },
   "codeGraph": {
+    "executable": "codegraph",
     "serverNamePattern": "codegraph|code-graph|code_graph",
     "requiredCapabilities": ["methodSymbols", "callees", "callers", "sourceLocations"],
     "queryLimit": 101,
@@ -122,9 +123,9 @@
   "batching": {
     "batchSize": 10,
     "maxConcurrentSubagents": 3,
-    "discoveryLeaseSeconds": 600,
-    "leaseSeconds": 600,
-    "heartbeatSeconds": 120,
+    "discoveryLeaseSeconds": 3600,
+    "leaseSeconds": 3600,
+    "heartbeatSeconds": 300,
     "retryLimit": 2,
     "checkpointAfterEachEntry": true,
     "checkpointAfterEachServiceDiscovery": true,

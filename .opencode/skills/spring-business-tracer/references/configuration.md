@@ -59,16 +59,19 @@
 - `analysis.maxDepth`：单分支最大深度，达到后为 `PARTIAL`。
 - `analysis.maxBranches`：单入口最大分支数，达到后为 `PARTIAL`。
 - `codeGraph.queryLimit`：必须严格等于`analysis.maxBranches+1`，不一致时配置加载直接失败。
+- `codeGraph.executable`：Code Graph CLI名称或绝对路径，默认`codegraph`。Windows下若终端可用但OpenCode找不到命令，使用`Get-Command codegraph`取得`codegraph.cmd`或`codegraph.exe`绝对路径并配置于此；插件通过PowerShell安全传递参数，不拼接查询字符串。
 - `batching.batchSize`：每批入口数，范围 1–100。
 - `batching.maxConcurrentSubagents`：建议 1–4，默认 3。
-- `batching.leaseSeconds`：租约 30–3600 秒。
-- `batching.discoveryLeaseSeconds`：单服务入口发现租约30–3600秒，超时后只回收该服务。
-- `batching.heartbeatSeconds`：OPEN批次续租周期。
+- `batching.leaseSeconds`：TRACE/VALIDATE/PUBLISH租约，30–86400秒。
+- `batching.discoveryLeaseSeconds`：单服务入口发现租约，30–86400秒。
+- `batching.heartbeatSeconds`：发现和OPEN批次的建议续租周期，必须小于两类租约。
 - `batching.retryLimit`：同一单元最大重试次数。
 - `entrypoints.enabledAdapters`：只启用明确列出的入口适配器。
 - `entrypoints.customAnnotations`：自定义入口注解；候选仍需 Code Graph 确认。
 
 `crossService.requireTwoSidedEvidence` 和 `verification.publishOnlyVerified` 必须保持 `true`。关闭它们会让 Doctor 返回 `FAIL`。
+
+租约配置在run初始化时冻结；运行中修改配置会触发配置指纹漂移并使旧run进入STALE，需新建run才能采用新值。claim省略`leaseSeconds`时使用冻结值，返回`serverNow/leaseUntil/heartbeatDueAt`供Agent调度。
 
 ## 指纹
 

@@ -17,6 +17,7 @@ metadata:
 - 仅支持 Java；不实现 Java parser、LSP 调用图或第二套代码图。
 - Java 符号、caller/callee、接口实现和跨文件 Java 边只能来自用户已安装并已完成索引的 Code Graph。
 - 优先使用工具包的 `codegraph_bounded_query` 适配器调用已安装的 CodeGraph CLI；它只包装官方 `status/query/callees/callers`，补充有界查询的机器可读完整性字段，不是第二套代码图。摘要型 `explore` 仅可作定位辅助，不能代替正式完整查询。
+- Windows中OpenCode与交互式终端可能拥有不同PATH；`CODEGRAPH_COMMAND_NOT_FOUND`时按诊断配置`codeGraph.executable`为`codegraph.cmd/codegraph.exe`绝对路径，不能降级成文本调用图。
 - grep/glob/read 只发现入口候选和读取注解、配置、XML、SQL、Entity、路由等非 Java 边证据。
 - `codeGraph.queryLimit` 必须严格等于 `analysis.maxBranches+1`；查询要显式传该 `limit`，且工具明确返回 `resultCount/truncated/completionStatus/summaryOmittedCount`。`maxFiles` 不能替代 `limit`；出现“and N more”等摘要省略一律 FAIL/PARTIAL。
 - 跨进程关系是 `LOGICAL_BOUNDARY`，必须有发送端、接收端和唯一规范 key 的双侧证据；不能任选目标。
@@ -41,7 +42,7 @@ metadata:
 
 `/spring-scan`：Doctor → 解析上下文/CONFIG审计 → 按服务领取入口发现租约并逐服务checkpoint → 覆盖审计 → 从checkpoint确定性plan → 分批 TRACE/VALIDATE/PUBLISH → 边界/覆盖审计 → V2拓扑快照 → COMPLETE。中断后只重领缺失或租约过期的服务。
 
-每一阶段都重新领取租约。批次处理中定时 heartbeat；本批全部提交后 close，close 时校验配置、源码、Code Graph索引、工具包、解析上下文和adapter registry。Worker只产候选trace；Validator独立回放。发布只能读取VERIFIED报告绑定的trace，文档先写staging，COMPLETE后原子发布。
+每一阶段都重新领取租约。以claim返回的插件端`serverNow/heartbeatDueAt`调度并在到期前heartbeat；迟到提交仅在fencing token仍是当前令牌时接受。本批全部提交后 close，close 时校验配置、源码、Code Graph索引、工具包、解析上下文和adapter registry。Worker只产候选trace；Validator独立回放。发布只能读取VERIFIED报告绑定的trace，文档先写staging，COMPLETE后原子发布。
 
 详见 [全项目扫描](references/full-scan.md)、[单入口追踪](references/trace-workflow.md)、[验证](references/validation.md)、[状态机](references/state-machine.md) 和 [发布恢复](references/publication-recovery.md)。
 
