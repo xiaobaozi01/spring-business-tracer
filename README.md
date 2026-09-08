@@ -1,122 +1,64 @@
-# Spring Business Tracer for OpenCode
+# Spring Business Tracer
 
-项目级 OpenCode 工具包，使用已安装的 Code Graph 梳理 Java Spring 后端业务逻辑。
+**纯 Markdown 的 OpenCode Agent + Skill 工具包。没有自定义 tools、插件、运行时、脚本、Schema 或 npm 依赖。**
 
-当前版本：`2.0.0`
+基于用户已有的 Code Graph，梳理 Java Spring 从业务入口到 Service、跨服务边界和数据库的链路。使用 OpenCode 原生 Task、读取、搜索、文档编辑工具；进度、证据和结果都写在 Markdown 中。
 
-## 接入项目
+## 安装
 
-把本仓库的 `.opencode/` 复制到目标Java Spring项目根目录；可部署应用写入`workspace.services`，mall-common、mall-mbg等公共源码模块写入`workspace.sharedModules`，不能当服务。安装锁定依赖并重启OpenCode：
+将本仓库以下目录中的 Markdown 文件复制到目标 Java 项目的同名目录，然后重启 OpenCode：
 
-```bash
-cd .opencode
-npm ci
-```
+- `.opencode/agents/`
+- `.opencode/commands/`
+- `.opencode/skills/spring-business-tracer/`
+- `.opencode/skills/spring-analysis/`
+- `.opencode/skills/spring-review/`
+- `.opencode/skills/spring-query/`
 
-确认 Code Graph 已由你在目标项目中建立最新索引且 MCP 可连接，然后依次运行：
+无需为本工具包安装依赖。OpenCode启动时可能自行生成它的SDK依赖文件，这些已被gitignore排除，不属于工具包发行内容。Code Graph 由用户提前安装并索引；工具包不会自动初始化或刷新索引。
 
-```text
-/spring-doctor scan
-/spring-scan --new
-```
+先运行 `/spring-doctor scan`，再运行 `/spring-scan --new`。首次使用会根据项目结构建立 `docs/spring-business/workspace.md`，记录服务、共享模块、分析范围及 profile，不要求填写一大份配置文件。
 
-工具包不会自动初始化或刷新 Code Graph。
+## 分工
 
-## V2.0 能力
+| Agent | 职责 | Skill |
+|---|---|---|
+| spring-business-orchestrator | 管理范围、任务交接、Markdown进度和交付；唯一文档写入者 | spring-business-tracer、spring-query |
+| spring-analyst | 发现入口、追踪调用、解释业务条件、关联边界和数据访问 | spring-analysis |
+| spring-reviewer | 独立重新取得证据，复核结果、入口覆盖和复用依据 | spring-review |
 
-- 从单个 HTTP/Java 入口追踪到 Service、Mapper/Repository 和数据库。
-- 一键发现并解析整个项目的已支持业务入口。
-- 按Spring profile/本地property source确定性解析placeholder，秘密值只输出hash；环境变量、`.env`、远程配置和SpEL失败关闭。
-- verified能力细分到Profile：新增静态functional WebFlux、JMS listener、Quartz静态trigger、GraphQL root和gRPC unary；动态变体保持PARTIAL。
-- 在所有服务源码均位于工作区并已被 Code Graph 索引时，继续追踪 Feign/HTTP、MQ、RPC 和 Event 跨服务边界。
-- 入口发现先按服务租约并独立checkpoint，插件重算结构化清单数量；随后按TRACE/VALIDATE/PUBLISH三阶段租约处理。中断后只重试未完成服务/入口。
-- 发现和分析租约都返回插件端`serverNow/heartbeatDueAt`并支持心跳；配置在run初始化时冻结，仍持有当前fencing token的迟到结果可安全提交。
-- 配置、逐服务源码、Code Graph索引、工具包、解析上下文和adapter registry在批次边界防漂移。
-- 由7个受限Subagent独立发现、追踪、配置复算和验证；认证报告只能由对应Validator/Auditor直接提交。
-- 仅基于V2 COMPLETE基线，按serviceClosure、sharedModuleClosure与configDependencyIds保守增量复用；其他schemaVersion直接拒绝。
-- 输出中文文档与V2类型化拓扑；SERVICE/ENTRY/端点/消息channel+subscription/RPC/Job/Data Resource分开建模，provenance单独分片。
-- 精确节点、邻接和解释查询只读目标shard，稳定cursor绑定topologyRootHash；完整性明确为工作区内自洽校验而非外部签名。
-- 识别Feign、RestTemplate、WebClient、Rabbit、Kafka和Spring Event双侧边界；Kafka按cluster/topic/group表达竞争消费语义。
-- 支持JPA、MyBatis XML/注解和JdbcTemplate持久化证据，动态表名保守标记PARTIAL。
-- `/spring-query` 默认查询已发布快照，`--live` 查询当前Code Graph；`/spring-impact` 分析静态影响范围。
+正常流程是 **入口清单 → 分析笔记 → 独立复核 → 中文交付**。不再设置多阶段租约、心跳、认证对象或自建状态机。
 
 ## 命令
 
-```text
-/spring-doctor [trace|scan|cross-service|impact|resume]
-/spring-trace http:POST:/api/orders
-/spring-scan --new --batch-size 10
-/spring-update --base current --batch-size 10
-/spring-pause run-id
-/spring-resume run-id
-/spring-status run-id
-/spring-query table:inventory.stock_item
-/spring-query path:com.example.OrderController#create->inventory.stock_item
-/spring-diff run-old run-new
-/spring-context resolve prod-cn
-/spring-topology neighbors service:order-service --context prod-cn
-/spring-explain rpc:grpc:acme.order.OrderQuery/Find
-/spring-query --live symbol:com.example.OrderService#create
-/spring-impact table:inventory.stock_item
-```
+| 命令 | 功能 |
+|---|---|
+| `/spring-doctor [trace\|scan\|cross-service\|impact\|resume]` | 检查实际 Code Graph 能力、索引和范围 |
+| `/spring-trace http:POST:/api/orders` | 追踪指定入口；也接受完整Java签名或入口ID |
+| `/spring-scan --new` | 全量发现所选范围内的入口并逐个分析 |
+| `/spring-update --base current` | 根据Git变更和笔记中的依赖范围增量重查 |
+| `/spring-pause runId` | 保存当前笔记与下一步后暂停 |
+| `/spring-resume runId` | 从Markdown进度恢复，先检查版本与工作树变化 |
+| `/spring-status runId` | 查看已保存的进度和缺口 |
+| `/spring-query table:inventory.stock_item` | 查询已有文档；显式 `--live` 查询当前Code Graph |
+| `/spring-impact method:com.acme.OrderService#create` | 沿真实callers追查静态影响范围 |
+| `/spring-diff oldRun newRun` | 比较两次入口、关系、证据和范围变化 |
+| `/spring-context resolve prod` | 解释本地profile、相关配置来源和placeholder |
+| `/spring-topology neighbors service:order-service` | 查询文档中的服务、协议和数据拓扑 |
+| `/spring-explain entry:order-create` | 追溯一个结论为什么成立 |
 
-全项目命令在当前会话预算内持续处理；大项目会在入口单元边界 checkpoint，然后用 `/spring-resume` 继续。
+保留 Spring MVC/WebFlux、消息监听、定时任务、Event、Runner、GraphQL/RPC 入口，Feign/HTTP/MQ/RPC 跨服务关系，以及 JPA、MyBatis、JdbcTemplate 等持久化分析方法。动态和无法验证的部分明确保留为 PARTIAL。
 
-## Agent 架构
+## 结果
 
-一个主 Agent：`spring-business-orchestrator`。
+结果保存在 `docs/spring-business/runs/<runId>/`：plan、入口清单、草稿、带复核意见的入口文档、拓扑表和数据库汇总。`current.md` 链接最近正式发布的结果。详细目录见 [文档约定](.opencode/skills/spring-business-tracer/references/artifacts.md)。
 
-七个隐藏、只读 Subagent：
+Java调用边仍以Code Graph为依据，文本匹配不能替代调用证据。复核是独立Agent的证据复查；恢复是读取工作记录，增量是保守判断依赖。没有旧引擎的哈希认证、原子发布、并发写入隔离或自动分片查询保证。同一run由一个主会话写入；变化无法确定时重新分析。
 
-1. `spring-entry-worker`：发现并用 Code Graph 确认入口。
-2. `spring-trace-worker`：追踪隔离入口，生成待验证结果。
-3. `spring-trace-validator`：独立重新查询 Code Graph 验证调用边和表。
-4. `spring-coverage-auditor`：独立清点入口，检查遗漏/重复。
-5. `spring-boundary-validator`：核对跨服务双方证据。
-6. `spring-incremental-validator`：核对V1基线、入口重发现和服务闭包失效集合。
-7. `spring-config-auditor`：独立复算Profile、placeholder、外部缺口和秘密脱敏。
+## 升级旧版
 
-Worker 不能验证自己，Validator 不能发布。主 Agent 通过状态插件顺序提交 checkpoint 和正式文档。
+在已安装的副本中移除本工具包的 `spring-business-state.js`、`plugins/spring-business/`、七个旧worker/validator/auditor Agent，以及旧的 spring-business-tracer Skill，然后复制上述目录。旧 `.opencode` 中其他工具包的插件、配置和依赖不要一起删除。
 
-## 正确性边界
+旧JSON配置中的服务/context可转记为workspace.md。旧缓存和快照保留作历史参考，新版不恢复旧租约或认证协议。不要复制 `.cache`、node_modules、测试构建产物或 `*-workspace` 历史工作目录。
 
-- Java 符号、caller/callee、接口实现和跨文件 Java 边只能来自 Code Graph。
-- 文本搜索只用于入口候选、注解、配置、Mapper XML、SQL 和 Entity，不能生成调用边。
-- Feign/MQ/RPC/Event 使用有两端证据的逻辑边界，明确区别于 Java 边。
-- 没有当前命令需要的 Code Graph 能力或索引时失败关闭。
-- Code Graph工具必须显式支持limit并明确返回resultCount/truncated；`maxFiles`或`and N more`摘要不能判为PASS。
-- 每条Java边校验调用点receiver类型、目标声明类型和可赋值集合，拒绝同名方法误连。
-- 状态插件只管理运行状态并计算源码字节指纹，不解析 Java 语义、不生成调用边，也不实现第二套代码图。
-- Code Graph 索引不会被工具包自动初始化、刷新或升级。
-- 静态functional WebFlux、JMS、Quartz、GraphQL root和gRPC unary有严格verified profile；动态router/destination/runtime wiring/streaming、Kafka Streams仍PARTIAL。
-- Path 默认 STRICT_ENTRY，避免把不同入口各自验证的边拼成虚假业务链；COMPOSED 只表示潜在静态可达。
-- 只支持当前V2 run与snapshot；其他schemaVersion直接拒绝，禁止跨版本seed和语义diff。
-
-## 输出与状态
-
-正式文档：
-
-```text
-docs/spring-business/
-```
-
-可恢复状态（已 gitignore）：
-
-```text
-.opencode/.cache/spring-business-tracer/runs/
-```
-
-只有独立验证通过或经安全证明复用的入口能进入正式快照。Validator/Auditor直接提交认证报告，状态插件校验OpenCode Agent身份、必需checks、查询记录和实际工件哈希。`graph/*.jsonl` 是可查询证据图，Java边仍只来自Code Graph。
-
-## 测试
-
-```bash
-python3 tests/scripts/validate_v20.py --require-codegraph
-node tests/scripts/validate_schemas.mjs
-node tests/scripts/test_state_plugin_v20.mjs
-python3 tests/scripts/compile_fixtures.py
-```
-
-固定 Code Graph 响应仅用于 `TEST_ONLY` 契约回放。真实集成取决于目标项目已初始化的 Code Graph 索引，先运行 `/spring-doctor`。
-
-Windows若命令行能执行`codegraph`但OpenCode报告`CODEGRAPH_COMMAND_NOT_FOUND`，运行`Get-Command codegraph`并将得到的`codegraph.cmd`或`codegraph.exe`绝对路径配置到`.opencode/spring-business-tracer.json`的`codeGraph.executable`。持续租约过期通常不是Agent时区导致：检查claim/status返回的`serverNow/heartbeatDueAt/remainingSeconds`，确认执行Agent在续租时点前用新operationId调用对应heartbeat。
+设计参考与取舍见 [设计说明](docs/agent-skill-design.md)，行为验收场景见 [验收说明](tests/README.md)。

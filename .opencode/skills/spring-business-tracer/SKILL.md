@@ -1,65 +1,40 @@
 ---
 name: spring-business-tracer
-description: 使用已安装的Code Graph梳理Java Spring项目或多服务工作区在不同Spring Profile下的全部业务入口、服务调用、跨服务协议、数据库资源和配置依赖，生成中文文档及带provenance的可查询类型化拓扑；支持一键全量/增量扫描、暂停恢复、分批验证、分片查询、解释与影响分析。
-license: MIT
+description: 用于 Java Spring 后端业务链路梳理、全量或增量扫描、分析进度恢复与诊断，基于已有 Code Graph。
 compatibility: opencode
 metadata:
   language: zh-CN
-  version: 2.0.0
+  version: "3.0"
 ---
 
-# Spring Business Tracer V2.0
+# Spring 业务梳理
 
-项目配置的固定路径是工作区根目录下的 `.opencode/spring-business-tracer.json`。需要配置时直接读取该文件，不要用 glob、目录遍历或业务 `config/` 目录猜测位置。
+这是纯文档工具包。使用宿主原生工具、Task 和用户已安装的 Code Graph；不生成辅助代码、脚本、插件、JSON 协议或新索引。
 
-## 不可变原则
+## 共同证据规则
 
-- 仅支持 Java；不实现 Java parser、LSP 调用图或第二套代码图。
-- Java 符号、caller/callee、接口实现和跨文件 Java 边只能来自用户已安装并已完成索引的 Code Graph。
-- 优先使用工具包的 `codegraph_bounded_query` 适配器调用已安装的 CodeGraph CLI；它只包装官方 `status/query/callees/callers`，补充有界查询的机器可读完整性字段，不是第二套代码图。摘要型 `explore` 仅可作定位辅助，不能代替正式完整查询。
-- Windows中OpenCode与交互式终端可能拥有不同PATH；`CODEGRAPH_COMMAND_NOT_FOUND`时按诊断配置`codeGraph.executable`为`codegraph.cmd/codegraph.exe`绝对路径，不能降级成文本调用图。
-- grep/glob/read 只发现入口候选和读取注解、配置、XML、SQL、Entity、路由等非 Java 边证据。
-- `codeGraph.queryLimit` 必须严格等于 `analysis.maxBranches+1`；查询要显式传该 `limit`，且工具明确返回 `resultCount/truncated/completionStatus/summaryOmittedCount`。`maxFiles` 不能替代 `limit`；出现“and N more”等摘要省略一律 FAIL/PARTIAL。
-- 跨进程关系是 `LOGICAL_BOUNDARY`，必须有发送端、接收端和唯一规范 key 的双侧证据；不能任选目标。
-- Validator/Auditor 必须自行调用 `spring_report_submit`；主 Agent 无权提交认证报告。
-- 正式完成必须基于实际工件字节、实际文档字节和确定性图快照，而不是调用者声明的哈希。
-- profile、placeholder和本地property source由确定性配置解析器处理；不读取环境变量、`.env`、秘密文件或远程配置，不执行SpEL。
-- V2绑定配置、源码、Code Graph、工具包、解析上下文和adapter registry指纹；任一漂移都不能静默复用。
+- Java 符号、caller/callee 和接口分派来自 Code Graph。已索引仓库先用 explore 定位；只有可核实的实际直接边才能进入调用链。
+- 源码阅读/文本搜索只补充注解、方法内分支、配置、SQL/XML/Entity。不能用同名方法、字段类型或“只有一个实现类”补造调用边；核对 receiver 与目标声明类型。
+- 查询有分页就继续取完，有截断/摘要省略就记录；不知道是否完整时明确写“未证明完整”，不编造 limit、计数或完整性字段。无对应能力时停止相关分支。
+- Java调用、框架分派、跨进程逻辑关系分别记录。HTTP/MQ/RPC/Event 匹配需要双方证据；动态或歧义目标保留候选和缺口。
+- 只读与任务相关的应用配置；不读取 `.env`、密钥或凭据文件。文档不保存密码、token、连接串凭据及其派生值，统一写“已隐藏”；不声称生成了不存在的hash。
+- 事实、解释和未知分开。只有经过独立复核的事实进入正式结果；部分证据可以交付，但必须逐项标 PARTIAL。
 
-## 入口范围
+## 根据当前任务加载
 
-从全部启用 adapter 发现 Controller/WebFlux、MQ listener、定时任务、Spring Event、RPC/GraphQL、Runner 等入口。V2按能力Profile验证，新增静态functional WebFlux、JMS、Quartz、GraphQL root与gRPC unary；动态路由、目的地和streaming仍保守标记。Feign client、HTTP client、producer不是业务入口。
+| 任务 | 操作知识 |
+|---|---|
+| doctor；首次分析前确认工具与范围 | [准备与配置](references/workspace.md) |
+| trace / scan / update / pause / resume / status | [工作流](references/workflows.md) |
+| query / impact / context / topology / explain / diff | `spring-query` |
+| 分析者发现入口或追踪 | `spring-analysis` |
+| 复核者检查分析结果或增量范围 | `spring-review` |
+| 保存进度和交付 | [文档约定](references/artifacts.md) |
 
-详见 [入口发现](references/entrypoints.md)、[V2能力Profile](references/adapter-profiles-v2.md)、[Code Graph契约](references/codegraph-contract.md) 和 [查询完整性](references/query-completeness.md)。
+子 Agent 只需读本页的共同规则及自己的 Skill。其余资料在任务遇到相应问题时再读。
 
-## 多服务拓扑
+## 交接
 
-可部署服务配置在 `workspace.services`，公共源码模块配置在 `workspace.sharedModules`，不能伪装成服务。服务间源码都存在时，先用边界 key 定位接收端，再从接收入口继续 Code Graph 追踪。trace分别记录`serviceClosure/sharedModuleClosure`；无法归属依赖仍禁止增量复用。
+主 Agent 给子任务：本次目的、服务/入口、上下文、已知符号、相关文件、分析范围、停止条件和返回格式。分析任务不接收其他分析者的推理；复核任务接收候选笔记，但自行取得证据。
 
-详见 [跨服务](references/cross-service.md)、[持久化](references/persistence.md)、[配置](references/configuration.md) 和 [配置上下文](references/config-resolution.md)。
-
-## 全量工作流
-
-`/spring-scan`：Doctor → 解析上下文/CONFIG审计 → 按服务领取入口发现租约并逐服务checkpoint → 覆盖审计 → 从checkpoint确定性plan → 分批 TRACE/VALIDATE/PUBLISH → 边界/覆盖审计 → V2拓扑快照 → COMPLETE。中断后只重领缺失或租约过期的服务。
-
-每一阶段都重新领取租约。以claim返回的插件端`serverNow/heartbeatDueAt`调度并在到期前heartbeat；迟到提交仅在fencing token仍是当前令牌时接受。本批全部提交后 close，close 时校验配置、源码、Code Graph索引、工具包、解析上下文和adapter registry。Worker只产候选trace；Validator独立回放。发布只能读取VERIFIED报告绑定的trace，文档先写staging，COMPLETE后原子发布。
-
-详见 [全项目扫描](references/full-scan.md)、[单入口追踪](references/trace-workflow.md)、[验证](references/validation.md)、[状态机](references/state-machine.md) 和 [发布恢复](references/publication-recovery.md)。
-
-## 增量工作流
-
-`/spring-update` 只接受V2 COMPLETE baseline。插件比较逐服务源码、逐共享模块源码与解析配置键；只有 `serviceClosure` 不触达 changedServices、`sharedModuleClosure` 不触达 changedSharedModules、`configDependencyIds` 不触达 changedConfigKeys 且没有未归属依赖才可 REUSED。adapter registry或索引语义变化均FULL_REBASE。
-
-详见 [增量分析](references/incremental.md)。
-
-## 暂停、恢复和幂等
-
-状态最小单元是入口的当前阶段：`PENDING → TRACE → TRACED → VALIDATE → VERIFIED → PUBLISH → PUBLISHED`。崩溃后租约过期会回到原阶段；`operationId` 防止重复提交：完全相同的重试复用ID，参数或操作变化换新ID。提交只接受结构化`inventory/entries/traceResult/report`；版本、run/服务/validator身份与六指纹由插件绑定。PAUSE 停止新领取，close 后进入 PAUSED；RESUME/RECOVER 可恢复租约、批次和 FINALIZING 发布事务。非V2 run直接拒绝并要求重新全量扫描。
-
-## 图与查询
-
-V2把已验证trace投影为类型化拓扑：SERVICE/ENTRY/JAVA_SYMBOL/HTTP_ENDPOINT/MESSAGE_CHANNEL/MESSAGE_SUBSCRIPTION/RPC_OPERATION/JOB_TRIGGER/DATA_RESOURCE及相应协议边。provenance单独分片；精确查询和邻接只读目标shard，cursor绑定topologyRootHash。`/spring-explain`返回证据。Java边仍只来自Code Graph。
-
-详见 [V2拓扑](references/topology-v2.md)、[图快照](references/graph-snapshot.md)、[查询与影响](references/query-impact.md) 和 [输出格式](references/output-format.md)。
-
-契约回放仅用于明确测试并标为 `TEST_ONLY`，见 [契约回放](references/contract-replay.md)。
+默认顺序处理入口，每个入口完成就保存。仅在多个入口独立且当前宿主允许时并行 Task，所有写入仍由主 Agent 汇总完成。同一个 run 不由两个主会话同时写。

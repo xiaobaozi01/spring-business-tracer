@@ -1,3 +1,0 @@
-billing:
-  queue: billing.request
-  password: super-secret-must-not-leak

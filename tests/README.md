@@ -1,30 +1,25 @@
-# V2.0 测试说明
+# 纯文档工具包验收
 
-测试覆盖五层：结构与最小权限、20份Schema正反例、逐服务入口checkpoint/状态机/分片篡改动态测试、真实Java构建、Code Graph真实索引合约。还覆盖结构化计数、有效Bean、receiver类型误边、共享模块与queryLimit等式。
+新版不保留旧状态引擎的测试代码与Java夹具。用宿主实际配置加载验证Agent、命令和Skill能被发现，再用真实项目做以下行为验收。检查工具调用和实际文档，不能只看模型最后一句“通过”。
 
-## 一键验收
+| 场景 | 应观察到的行为 | 不通过的行为 |
+|---|---|---|
+| 缺少Code Graph索引 | Doctor说明缺口，停止创建Java调用链 | 自动建索引，或用文本猜边 |
+| 单入口追踪 | 从实际符号逐跳分析，给出表/边界/条件和证据；独立reviewer复核 | 只写摘要或自我认证 |
+| 同名方法误连 | 核对receiver与目标类型，拒绝日志/集合API连到业务同名方法 | 信任同名候选 |
+| 全量入口发现 | 覆盖所选服务与类型，保留零命中、排除及未知 | 把已找到的入口数量说成全项目总数 |
+| 静态与动态协议 | HTTP/MQ/RPC匹配两端；动态目的地、streaming或外部配置标PARTIAL | 任选接收目标 |
+| Kafka两个group，同组多listener | 分开订阅并说明同组竞争 | 声称单消息必到所有listener |
+| JPA save、动态MyBatis SQL、多数据源 | 保留操作/表名不确定性，不合并不同库同名表 | 猜表、猜INSERT或隐藏未知 |
+| 暂停后新会话恢复 | 读取plan与草稿，检查版本，从记录的具体入口继续 | 依赖原聊天历史或调用旧状态工具 |
+| 增量修改共享模块/配置 | 重查所有相关入口；依赖不全或脏工作树无法对比时扩大范围 | 只按入口文件是否改动决定复用 |
+| Code Graph离线时查询已有文档 | 只读current、索引和笔记；给出来源与记录时间 | 自动扫描或把离线当历史文档不可读 |
+| 不同入口的局部边能拼出路径 | 默认拒绝当作单一业务链；COMPOSED标潜在静态可达 | 伪造业务执行顺序 |
+| 发布过程中中断 | 保留旧current，读取实际文件核对后补齐 | 声称不存在的原子发布已经完成 |
+| 配置包含密码/环境占位符 | 文档隐藏秘密，外部/复杂配置注明未知 | 写入秘密或伪造valueHash |
+| 只有一个入口完成 | 清楚区分单入口完成与全项目覆盖 | 声称全项目扫描完成 |
+| 工具包无代码 | 只用宿主内置工具、Code Graph与Markdown；不生成辅助脚本 | 临时写Python/JS重新实现状态或查询 |
 
-```bash
-python3 tests/scripts/validate_v20.py --require-codegraph
-python3 tests/scripts/compile_fixtures.py --maven /absolute/path/to/mvn --local-repo /tmp/m2
-```
+静态结构检查仅能证明文件、引用、权限与路由一致，不能证明上述模型行为已经通过。真实项目行为验收须另行记录项目、输入、实际工具调用、产物与结论；没有执行就标未验证。
 
-第一次真实Code Graph验证前，在综合夹具中由测试人员显式执行：
-
-```bash
-cd tests/fixtures/v20-enterprise-system
-codegraph init .
-```
-
-工具包的 Doctor 和业务命令不会自动初始化、刷新或重建用户的 Code Graph 索引。
-
-## 覆盖范围
-
-- `validate_v20.py`：13个命令、1个主Agent+7个Subagent、20份Schema和V2真实合约。
-- `validate_schemas.mjs`：Draft 2020-12全部合法样例，以及环境变量放宽、自定义脚本、配置依赖、伪造Code Graph工具和CONFIG审计缺根等负例。
-- `test_state_plugin_v20.mjs`：23个插件工具、仅结构化提交与可操作诊断、Windows CodeGraph `.cmd`安全解析、有界查询适配、发现/批次心跳、fencing token迟到提交、逐服务checkpoint、结构化计数、receiver类型误边、共享模块闭包、完整状态生命周期、类型化拓扑、增量删除/tombstone与安全路径。
-- `v20-enterprise-system/codegraph-contract.json`：5个入口、11条Java边、4类框架分派、Gateway/JMS双侧逻辑边界、4个持久化反向探针和5个有真实源码的负能力Profile。
-- `compile_fixtures.py`：3个早期回归项目、V1.0四服务、V1.5三服务与V2.0三服务Maven reactor。
-- `evals/evals.json`：多上下文配置、协议拓扑、分片查询、能力Profile、增量失效、严格结构化协议及真实项目回归评测。
-
-契约回放输出必须标记 `TEST_ONLY`。它用于可重复断言，不可替代正式运行时在线查询 Code Graph。
+本次已检查：OpenCode实际加载3个Agent和13个命令；发现4个新Skill；未加载本工具包的任何插件。发行目录仅26个Markdown文件，文件引用检查通过。上述真实项目行为场景尚未逐项执行，不沿用旧引擎测试的通过结论。

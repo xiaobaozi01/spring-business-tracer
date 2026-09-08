@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .DS_Store
 target/
+
+# Host-generated SDK files; this toolkit distributes Markdown only.
+.opencode/package.json
+.opencode/package-lock.json

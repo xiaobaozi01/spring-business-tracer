@@ -1,9 +1,7 @@
 ---
-description: 基于同版V2 COMPLETE快照一键增量重分析；按服务、共享模块与配置依赖闭包保守失效
+description: 根据基线文档和变更范围增量重查
 agent: spring-business-orchestrator
 subtask: false
 ---
 
-加载 `spring-business-tracer`、`references/incremental.md`、`full-scan.md` 和 `validation.md`。参数：`$ARGUMENTS`，支持 `--base current|runId`、`--batch-size N`、`--max-agents N`。
-
-执行INCREMENTAL：Doctor→CONFIG审计→创建run→全量重发现→incremental validator先读`spring_report_context`再用结构化`report`提交changedServices/changedSharedModules/changedConfigKeys与互斥集合→seed→处理affected/new→coverage/boundary→V2拓扑→COMPLETE。非V2 baseline直接拒绝；adapter registry/索引语义变化或依赖证明不足时FULL_REBASE。
+加载 `spring-business-tracer`，读取 `references/workflows.md`，执行 `update`。用户参数原样保留：`$ARGUMENTS`。
